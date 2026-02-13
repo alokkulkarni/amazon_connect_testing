@@ -73,3 +73,22 @@ Mature enterprises rarely choose just one. They adopt a **Hybrid Architecture**:
 2.  **The Frontier Escalation**: If the Sovereign model detects a complex query ("I need financial advice"), it anonymizes the necessary context and sends it to the Frontier Model API for processing, then re-hydrates the answer before sending it to the user.
 
 This approach balances **Cost**, **Privacy**, and **Intelligence**.
+
+---
+
+## 5. Risk Assessment: Sovereign vs. Frontier
+
+While Sovereign Models offer control, they introduce specific risks that Frontier models abstract away. This table outlines the comparative risks.
+
+| Risk Category | Sovereign Model Risks (You Manage) | Frontier Model Risks (Provider Manages) |
+| :--- | :--- | :--- |
+| **Operational Risk** | **High**. You are responsible for uptime, GPU availability, patching, and scaling. If your GPU cluster fails, your service fails. | **Low**. The provider (AWS/OpenAI) guarantees SLA. Scaling is automatic. |
+| **Obsolescence Risk** | **Medium**. Your static model (e.g., Llama 3) will become outdated quickly. You must actively manage the "Refresh Cycle" (re-hosting new versions). | **Low**. Frontier models are continuously updated (e.g., GPT-4 -> GPT-4o) without your intervention (though this can break prompts). |
+| **Security (Vulnerability)** | **High**. You must secure the model weights, the inference server, and the container supply chain (CVEs in PyTorch/CUDA). | **Low**. Provider secures the infrastructure. You only secure your API keys. |
+| **Knowledge Stagnation** | **High**. A Sovereign model's knowledge cutoff is fixed at training time. It requires RAG (Retrieval) to know anything new. | **Medium**. Providers update knowledge cutoffs frequently, though they still hallucinate without RAG. |
+| **Talent/Skill Risk** | **High**. Requires expensive ML Engineers to deploy, quantize, and fine-tune models. | **Low**. Requires Prompt Engineers and Software Developers. No deep ML expertise needed. |
+| **Supply Chain** | **Medium**. "Open Weights" often come from unregulated sources (Hugging Face). You must scan weights for malicious code/pickles. | **Low**. Proprietary models are closed and vetted by the provider. |
+
+### Summary Recommendation on Risk
+*   **Choose Sovereign** if your primary risk is **Data Leakage** or **Regulatory Compliance** (e.g., "Data cannot leave Switzerland"). You accept the higher Operational Risk to mitigate the Legal Risk.
+*   **Choose Frontier** if your primary risk is **Execution/Time-to-Market**. You accept the Data Trust Risk (mitigated by contracts) to eliminate Operational Complexity.
