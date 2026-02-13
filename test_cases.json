@@ -1,0 +1,15 @@
+[
+  {
+    "name": "General Inquiry - Voice Test",
+    "destination_phone": "+18005550100", 
+    "_comment": "destination_phone must be your Amazon Connect claimed number",
+    "input_speech": "I have a general question about my service",
+    "expected_queue": "GeneralSupportQueue"
+  },
+  {
+    "name": "Account Balance Check",
+    "destination_phone": "+18005550100",
+    "input_speech": "I would like to check my account balance",
+    "expected_queue": "AccountsQueue"
+  }
+]

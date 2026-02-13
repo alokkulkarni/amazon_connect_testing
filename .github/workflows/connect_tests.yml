@@ -1,0 +1,55 @@
+name: Amazon Connect Voice Flow Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test-connect-flows:
+    runs-on: ubuntu-latest
+    
+    # Add permissions for OIDC
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r amazon_connect_testing/requirements.txt
+        
+    - name: Configure AWS Credentials
+      if: env.MOCK_AWS == 'false'
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        
+    - name: Run Voice Flow Tests
+      env:
+        CONNECT_INSTANCE_ID: ${{ secrets.CONNECT_INSTANCE_ID }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+        # Set to 'false' for real testing (requires valid creds and charges apply)
+        MOCK_AWS: 'true' 
+      run: |
+        cd amazon_connect_testing
+        # Run tests and generate JUnit XML report for GitHub
+        pytest test_voice_flows.py --junitxml=test-results.xml
+
+    - name: Upload Test Results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results
+        path: amazon_connect_testing/test-results.xml
