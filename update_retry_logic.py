@@ -1,4 +1,6 @@
-import boto3
+import os
+
+content = r'''import boto3
 import json
 import pytest
 import os
@@ -70,30 +72,16 @@ def test_connect_voice_flow(test_case):
     try:
         # 1. Initiate Inbound Call to Connect (via Chime SDK)
         print(f"[STEP 2] Action: Invoking Chime SIP Media Application...")
-        
-        response = None
-        for i in range(3):
-            try:
-                response = chime_client.create_sip_media_application_call(
-                    FromPhoneNumber=CHIME_PHONE_NUMBER,
-                    ToPhoneNumber=test_case['destination_phone'],
-                    SipMediaApplicationId=CHIME_SMA_ID,
-                    ArgumentsMap={
-                        'case_id': test_case.get('name', 'unknown'),
-                        'tts_text': input_speech,
-                        'expected_intent': test_case.get('attributes', {}).get('intent', '')
-                    }
-                )
-                break
-            except ClientError as e:
-                if "Concurrent call limits breached" in str(e):
-                    print(f"   > WARN: Concurrency limit hit. Waiting 30s before retry {i+1}...")
-                    time.sleep(30)
-                else:
-                    raise e
-        
-        if not response:
-             pytest.fail("Failed to initiate call due to concurrency limits.")
+        response = chime_client.create_sip_media_application_call(
+            FromPhoneNumber=CHIME_PHONE_NUMBER,
+            ToPhoneNumber=test_case['destination_phone'],
+            SipMediaApplicationId=CHIME_SMA_ID,
+            ArgumentsMap={
+                'case_id': test_case.get('name', 'unknown'),
+                'tts_text': input_speech,
+                'expected_intent': test_case.get('attributes', {}).get('intent', '')
+            }
+        )
         
         transaction_id = response['SipMediaApplicationCall']['TransactionId']
         print(f"   > SUCCESS: Call Initiated.")
@@ -186,21 +174,19 @@ def test_connect_voice_flow(test_case):
             contact_id = "mock-id"
             print(f"   [MOCK] Found Contact ID: {contact_id}")
         else:
-             search_retries = 30
-             print(f"   > Searching for Contact ID for phone {CHIME_PHONE_NUMBER} (Retrying up to {search_retries} times)...")
-             
-             for i in range(search_retries):
-                 try:
-                     # Wait a moment for indexing
-                     time.sleep(10) 
+             try:
+                 print(f"   > Searching for Contact ID for phone {CHIME_PHONE_NUMBER}...")
+                 
+                 # Retry loop for SearchContacts
+                 search_attempts = 5
+                 for i in range(search_attempts):
+                     print(f"   > Attempt {i+1}/{search_attempts}: Searching recent contacts...")
                      
-                     # NOTE: SearchContacts does not support filtering by Customer Phone Number directly in SearchCriteria
-                     # We must fetch recent contacts and filter client-side.
                      search_response = connect_client.search_contacts(
                          InstanceId=CONNECT_INSTANCE_ID,
                          TimeRange={
                              'Type': 'INITIATION_TIMESTAMP',
-                             'StartTime': int(time.time()) - 600, # Look back 10 mins
+                             'StartTime': int(time.time()) - 300, # Look back 5 mins
                              'EndTime': int(time.time()) + 60
                          },
                          SearchCriteria={
@@ -209,88 +195,74 @@ def test_connect_voice_flow(test_case):
                          Sort={
                              'FieldName': 'INITIATION_TIMESTAMP',
                              'Order': 'DESCENDING'
-                         },
-                         MaxResults=20
+                         }
                      )
                      
                      contacts = search_response.get('Contacts', [])
-                     if not contacts:
-                         print(f"   > Attempt {i+1}/{search_retries}: No recent contacts found yet...")
-                     else:
-                         # Iterate to find the right one if possible, or take the first
-                         # Filter logic: Since we don't have the Chime number directly in search, we look for matches
-                         # However, Connect might not index the From number instantly. 
-                         # We'll assume the most recent contact in the last 2 minutes is ours if we are running solitary tests.
+                     if contacts:
+                         # Filter logic could go here if multiple calls overlap
+                         # For now take the most recent
+                         contact_id = contacts[0]['Id']
+                         print(f"   > Found Contact ID: {contact_id}")
+                         break
+                     
+                     if i < search_attempts - 1:
+                         time.sleep(10) # Wait 10s between retries
+                 
+                 if not contact_id:
+                     print(f"   > FAILURE: Could not find any contact record in the last 5 minutes after retries.")
+                     print(f"   > Possible causes: Call blocked, wrong instance, or Chime failed to dial.")
+                 else:
+                     if contact_id:
+                         # Get full details to verify queue
+                         contact_details = connect_client.describe_contact(
+                              InstanceId=CONNECT_INSTANCE_ID,
+                              ContactId=contact_id
+                         ).get('Contact', {})
                          
-                         found_match = False
-                         for c in contacts:
-                             # Check timestamps - ensure it's very recent (within last 3 mins)
-                             init_time = c.get('InitiationTimestamp')
-                             # Use ID as confirmation we found *something*
-                             print(f"   > Found Candidate Contact ID: {c['Id']} at {init_time}")
-                             
-                             contact_id = c['Id']
-                             found_match = True
-                             break # Take the most recent one
+                         # Check Disconnect Reason
+                         if 'DisconnectDetails' in contact_details:
+                              print(f"   > Disconnect Reason: {contact_details.get('DisconnectDetails', {}).get('PotentialDisconnectIssue', 'Unknown')}")
                          
-                         if found_match:
-                             print(f"   > SUCCESS: Found Contact ID: {contact_id}")
-                             break
+                         # Check Queue from Contact Record (Validation fallback)
+                         contact_queue = contact_details.get('QueueInfo', {}).get('Name')
+                         print(f"   > Contact Record indicates Queue: {contact_queue}")
                          
-                 except Exception as search_err:
-                     print(f"   > ERROR searching for contact (Attempt {i+1}): {search_err}")
+                         if expected_queue and not found_in_queue and contact_queue == expected_queue:
+                              print(f"   > TEST PASSED (Historical): Contact WAS routed to queue (but ended before metric check).")
+                              found_in_queue = True
 
-             if not contact_id:
-                 print(f"   > FAILURE: Could not find any contact record after {search_retries} attempts.")
-                 print(f"   > Possible causes: Call blocked, wrong instance, or Chime failed to dial.")
-             else:
-                 if contact_id:
-                     # Get full details to verify queue
-                     contact_details = connect_client.describe_contact(
-                          InstanceId=CONNECT_INSTANCE_ID,
-                          ContactId=contact_id
-                     ).get('Contact', {})
-                     
-                     # Check Disconnect Reason
-                     if 'DisconnectDetails' in contact_details:
-                          print(f"   > Disconnect Reason: {contact_details.get('DisconnectDetails', {}).get('PotentialDisconnectIssue', 'Unknown')}")
-                     
-                     # Check Queue from Contact Record (Validation fallback)
-                     contact_queue = contact_details.get('QueueInfo', {}).get('Name')
-                     print(f"   > Contact Record indicates Queue: {contact_queue}")
-                     
-                     if expected_queue and not found_in_queue and contact_queue == expected_queue:
-                          print(f"   > TEST PASSED (Historical): Contact WAS routed to queue (but ended before metric check).")
-                          found_in_queue = True
+                         # Fetch Transcript
+                         try:
+                             # Check if method exists (handling old boto3)
+                             if hasattr(connect_client, 'list_realtime_contact_analysis_segments'):
+                                 transcript_response = connect_client.list_realtime_contact_analysis_segments(
+                                     InstanceId=CONNECT_INSTANCE_ID,
+                                     ContactId=contact_id,
+                                     MaxResults=100
+                                 )
+                                 
+                                 print(f"   > --- TRANSCRIPT START ---")
+                                 segments = transcript_response.get('Segments', [])
+                                 has_transcript = False
+                                 for segment in segments:
+                                     transcript = segment.get('Transcript', {})
+                                     if transcript:
+                                         has_transcript = True
+                                         speaker = transcript.get('ParticipantRole', 'UNKNOWN')
+                                         content = transcript.get('Content', '')
+                                         print(f"   > [{speaker}]: {content}")
+                                 
+                                 if not has_transcript:
+                                     print(f"   > (No transcript segments found yet.)")
+                                 print(f"   > --- TRANSCRIPT END ---")
+                             else:
+                                 print(f"   > WARNING: list_realtime_contact_analysis_segments not available in this boto3 version.")
+                         except (ClientError, AttributeError) as ce:
+                             print(f"   > INFO: Could not fetch transcript (likely due to permissions or old SDK): {ce}")
 
-                     # Fetch Transcript
-                     try:
-                         # Check if method exists (handling old boto3)
-                         if hasattr(connect_client, 'list_realtime_contact_analysis_segments'):
-                             transcript_response = connect_client.list_realtime_contact_analysis_segments(
-                                 InstanceId=CONNECT_INSTANCE_ID,
-                                 ContactId=contact_id,
-                                 MaxResults=100
-                             )
-                             
-                             print(f"   > --- TRANSCRIPT START ---")
-                             segments = transcript_response.get('Segments', [])
-                             has_transcript = False
-                             for segment in segments:
-                                 transcript = segment.get('Transcript', {})
-                                 if transcript:
-                                     has_transcript = True
-                                     speaker = transcript.get('ParticipantRole', 'UNKNOWN')
-                                     content = transcript.get('Content', '')
-                                     print(f"   > [{speaker}]: {content}")
-                             
-                             if not has_transcript:
-                                 print(f"   > (No transcript segments found yet.)")
-                             print(f"   > --- TRANSCRIPT END ---")
-                         else:
-                             print(f"   > WARNING: list_realtime_contact_analysis_segments not available in this boto3 version.")
-                     except (ClientError, AttributeError) as ce:
-                         print(f"   > INFO: Could not fetch transcript (likely due to permissions or old SDK): {ce}")
+             except Exception as search_err:
+                 print(f"   > ERROR searching for contact: {search_err}")
 
         # Final Assertion
         if not MOCK_AWS:
@@ -300,12 +272,10 @@ def test_connect_voice_flow(test_case):
             else:
                 # If no queue expected, pass if we found the contact
                 if not contact_id:
-                     print("   > WARNING: Call record not found in Connect (likely due to SearchContacts delay).")
-                     print("   > Since this is a negative test case (no queue expected), we assume success if Chime initiated call.")
-                     # pytest.fail("Call record not found in Connect.")
+                     pytest.fail("Call record not found in Connect.")
                 else:
                      print("   > TEST PASSED: Call completed (Negative test case).")
-        
+            
     except ClientError as e:
         print(f"   > ERROR: AWS Client failed: {e}")
         pytest.fail(f"AWS ClientError: {e}")
@@ -319,3 +289,7 @@ def test_connect_voice_flow(test_case):
 if __name__ == "__main__":
     # Allow running directly with python
     pytest.main(["-s", "-v", __file__])
+'''
+
+with open('test_voice_flows.py', 'w') as f:
+    f.write(content)

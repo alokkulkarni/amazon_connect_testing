@@ -4,5 +4,5 @@
 # python-dotenv will automatically load variables from .env if it exists
 # No need to manually source .env here
 
-# Run tests
-pytest test_voice_flows.py
+# Run tests with -s to show stdout (logs)
+pytest -s test_voice_flows.py

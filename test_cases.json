@@ -1,15 +1,25 @@
 [
   {
-    "name": "General Inquiry - Voice Test",
-    "destination_phone": "+18005550100", 
-    "_comment": "destination_phone must be your Amazon Connect claimed number",
-    "input_speech": "I have a general question about my service",
-    "expected_queue": "GeneralSupportQueue"
+    "name": "Voice - Happy Path (Open Hours)",
+    "description": "Validates that a voice call during operating hours is successfully routed to the BasicQueue.",
+    "destination_phone": "+442046324237",
+    "input_speech": "I need help with my account.",
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "attributes": {
+      "intent": "connect_queue"
+    }
   },
   {
-    "name": "Account Balance Check",
-    "destination_phone": "+18005550100",
-    "input_speech": "I would like to check my account balance",
-    "expected_queue": "AccountsQueue"
+    "name": "Voice - Closed Hours (Simulated)",
+    "description": "Validates that a voice call outside operating hours plays a message and disconnects. (Note: Requires manually closing hours or simulation)",
+    "destination_phone": "+442046324237",
+    "input_speech": "Calling out of hours.",
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_message_fragment": "We are not able to take your call right now",
+    "attributes": {
+      "intent": "check_hours"
+    }
   }
 ]

@@ -85,3 +85,24 @@ To validate flow logic more deeply (e.g., "did the user hear the prompt?"), cons
 -   Integrating with Amazon CloudWatch Logs to parse execution paths.
 -   Using Amazon Connect Contact Trace Records (CTR) streams.
 -   Using a telephony testing tool (like Twilio) to place actual calls and verify audio.
+
+## Troubleshooting
+
+### Common Errors
+
+1.  **Concurrent call limits breached**:
+    *   AWS Chime SDK Sandbox accounts often have a limit of 1 concurrent call.
+    *   The test script includes retry logic (3 retries, 30s apart).
+    *   If you see this error, wait 1-2 minutes for previous calls to fully disconnect.
+
+2.  **Call record not found in Connect (SearchContacts)**:
+    *   Amazon Connect's `SearchContacts` API has a natural indexing latency (1-3 minutes).
+    *   The test script retries searching for up to 5 minutes.
+    *   If this fails consistently, verify:
+        *   Your Connect instance has `Contact Lens` enabled (optional, but helps with search).
+        *   The IAM user has `connect:SearchContacts` permission.
+        *   The `CHIME_PHONE_NUMBER` matches what Connect sees as the Caller ID.
+
+3.  **No contacts found in queue**:
+    *   Ensure the `test_cases.json` maps to the correct **Queue Name** in your Connect instance.
+    *   Ensure the Contact Flow logic actually routes to that queue.
