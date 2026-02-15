@@ -47,7 +47,9 @@ def get_clients():
 
 def load_test_cases():
     with open("test_cases.json", "r") as f:
-        return json.load(f)
+        all_cases = json.load(f)
+        # Filter for voice tests (either explicitly 'voice' or assuming legacy ones are voice)
+        return [case for case in all_cases if case.get('type', 'voice') == 'voice']
 
 @pytest.mark.parametrize("test_case", load_test_cases())
 def test_connect_voice_flow(test_case):

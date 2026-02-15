@@ -1,7 +1,6 @@
 boto3
 pytest
-requests
-PyYAML
-mock
-pytest-cov
+pytest-asyncio
 python-dotenv
+mock
+requests

@@ -1,0 +1,13 @@
+[
+  {
+    "name": "Lex - Check Balance (Happy Path)",
+    "description": "Validates that the bot recognizes 'Check my balance' as BalanceIntent",
+    "bot_id": "REPLACE_WITH_YOUR_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_YOUR_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "Check my balance",
+    "expected_intent": "CheckBalance",
+    "expected_message_fragment": "balance",
+    "expected_slots": {}
+  }
+]

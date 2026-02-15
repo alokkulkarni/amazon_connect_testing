@@ -1,6 +1,7 @@
 [
   {
     "name": "Voice - Happy Path (Open Hours)",
+    "type": "voice",
     "description": "Validates that a voice call during operating hours is successfully routed to the BasicQueue.",
     "destination_phone": "+442046324237",
     "input_speech": "I need help with my account.",
@@ -12,6 +13,7 @@
   },
   {
     "name": "Voice - Closed Hours (Simulated)",
+    "type": "voice",
     "description": "Validates that a voice call outside operating hours plays a message and disconnects. (Note: Requires manually closing hours or simulation)",
     "destination_phone": "+442046324237",
     "input_speech": "Calling out of hours.",

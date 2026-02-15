@@ -31,6 +31,19 @@ This project provides an automated Python framework to test Amazon Connect voice
         -   Ensure you have configured AWS credentials locally using `aws configure` or by setting environment variables.
         -   The script will automatically pick up your local AWS profile.
 
+## Lambda Regression Testing (LocalStack)
+
+Automated testing for AWS Lambda functions using LocalStack for local emulation of AWS services.
+
+*   **Directory**: `amazon_connect_testing/lambda_testing`
+*   **Runner**: `./amazon_connect_testing/lambda_testing/run_lambda_tests.sh`
+*   **Features**:
+    *   Spins up LocalStack in a Docker container.
+    *   Deploys Lambda functions.
+    *   Creates dependent resources (S3, DynamoDB).
+    *   Invokes functions with test payloads.
+    *   Validates responses and side-effects (e.g., database writes).
+
 ## Usage
 
 ### 1. Define Test Cases
@@ -86,6 +99,10 @@ To validate flow logic more deeply (e.g., "did the user hear the prompt?"), cons
 -   Using Amazon Connect Contact Trace Records (CTR) streams.
 -   Using a telephony testing tool (like Twilio) to place actual calls and verify audio.
 
+## Regression Testing
+- **Voice Flows**: Run `./run_tests.sh` to test Connect flows via Chime SDK.
+- **Lex Bots**: Run `./lex_testing/run_lex_tests.sh` to test Lex bot intent recognition. See [Lex Testing Guide](lex_testing/LEX_TESTING_GUIDE.md) for details.
+
 ## Troubleshooting
 
 ### Common Errors
@@ -106,3 +123,37 @@ To validate flow logic more deeply (e.g., "did the user hear the prompt?"), cons
 3.  **No contacts found in queue**:
     *   Ensure the `test_cases.json` maps to the correct **Queue Name** in your Connect instance.
     *   Ensure the Contact Flow logic actually routes to that queue.
+
+## Automation Testing Suite (GitHub Actions)
+
+This repository includes a unified GitHub Actions workflow to run all automation tests (Voice, Lex, and Lambda).
+
+### Setup for GitHub Actions
+
+1.  **Configure OIDC for AWS:**
+    *   Create an IAM Role in your AWS account with a trust policy allowing `repo:<your-org>/<your-repo>:*` to assume it.
+    *   Attach policies for:
+        *   `AmazonConnect_FullAccess` (or specific permissions for `StartOutboundVoiceContact`, `GetMetricData`, `SearchContacts`).
+        *   `AmazonLexFullAccess` (or specific permissions for `RecognizeText`).
+        *   `AmazonChimeSDKFullAccess` (or specific permissions for `CreateSipMediaApplicationCall`).
+
+2.  **Add Repository Secrets/Variables:**
+    Go to **Settings > Secrets and variables > Actions** and add the following:
+    *   **Variables (Repository variables):**
+        *   `CONNECT_INSTANCE_ID`: Your Amazon Connect Instance ID.
+        *   `CHIME_SMA_ID`: Your Chime SIP Media Application ID.
+        *   `CHIME_PHONE_NUMBER`: The source phone number from Chime.
+        *   `LEX_BOT_ID`: The ID of the Lex bot to test.
+        *   `LEX_BOT_ALIAS_ID`: The Alias ID of the Lex bot.
+    *   **Secrets (Repository secrets):**
+        *   (If you have sensitive values like API keys, use Secrets, but the workflow currently uses `vars` for IDs).
+
+3.  **Update Workflow File:**
+    *   Edit `.github/workflows/automation_tests.yml`.
+    *   Replace `arn:aws:iam::REPLACE_WITH_YOUR_ROLE_ARN:role/GitHubActionsRole` with your actual IAM Role ARN.
+
+4.  **Run the Workflow:**
+    *   Go to the **Actions** tab in GitHub.
+    *   Select **Automation Testing Suite**.
+    *   Click **Run workflow**.
+    *   Select the environment (dev/test/prod) and run.

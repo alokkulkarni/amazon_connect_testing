@@ -1,0 +1,8 @@
+boto3
+pytest
+python-dotenv
+testcontainers[localstack]
+requests
+mock
+pytest-cov
+PyYAML
