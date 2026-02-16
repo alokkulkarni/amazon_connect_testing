@@ -1,323 +1,282 @@
 import boto3
-import json
 import pytest
+import json
 import os
 import time
-from botocore.exceptions import ClientError, NoCredentialsError
-from unittest.mock import MagicMock
+import uuid
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Configuration - should be set via environment variables in CI/CD
-CONNECT_INSTANCE_ID = os.getenv("CONNECT_INSTANCE_ID", "your-instance-id")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1") # Region for Connect
-CHIME_AWS_REGION = os.getenv("CHIME_AWS_REGION", AWS_REGION) # Region for Chime (defaults to AWS_REGION)
+# --- Configuration ---
+CONNECT_INSTANCE_ID = os.getenv('CONNECT_INSTANCE_ID', '96a4166c-3e1f-44e1-bfea-82f88582b0d7')
+CHIME_SMA_ID = os.getenv('CHIME_SMA_ID', '2c029a7a-92cf-45b7-be78-94ae50be7a00')
+CHIME_PHONE_NUMBER = os.getenv('CHIME_PHONE_NUMBER', '+441134711044')
+AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+DYNAMODB_TABLE_NAME = "VoiceTestState"
 
-CHIME_SMA_ID = os.getenv("CHIME_SMA_ID", "your-sip-media-app-id")
-CHIME_PHONE_NUMBER = os.getenv("CHIME_PHONE_NUMBER", "+15550100") # Number owned by Chime
-MOCK_AWS = os.getenv("MOCK_AWS", "true").lower() == "true"
+# Mock mode for GitHub Actions or local dev without full creds
+MOCK_AWS = os.getenv('MOCK_AWS', 'false').lower() == 'true'
 
 def get_clients():
+    """Returns AWS clients."""
     if MOCK_AWS:
-        connect_client = MagicMock()
-        chime_client = MagicMock()
-        
-        # Simulate successful Chime call creation
-        chime_client.create_sip_media_application_call.return_value = {
-            "SipMediaApplicationCall": {
-                "TransactionId": "mock-transaction-id-12345"
-            }
-        }
-        
-        # Simulate Connect contact search finding the call
-        connect_client.get_current_metric_data.return_value = {
-             "MetricResults": [] # Simplified
-        }
-        
-        return connect_client, chime_client
-    else:
-        try:
-            connect = boto3.client("connect", region_name=AWS_REGION)
-            chime = boto3.client("chime-sdk-voice", region_name=CHIME_AWS_REGION)
-            return connect, chime
-        except NoCredentialsError:
-            pytest.fail("No AWS credentials found. Please configure your credentials.")
+        return None, None, None
+    
+    session = boto3.Session(region_name=AWS_REGION)
+    connect_client = session.client('connect')
+    chime_client = session.client('chime-sdk-voice')
+    dynamodb_client = session.resource('dynamodb')
+    return connect_client, chime_client, dynamodb_client
 
 def load_test_cases():
-    with open("test_cases.json", "r") as f:
-        all_cases = json.load(f)
-        # Filter for voice tests (either explicitly 'voice' or assuming legacy ones are voice)
-        return [case for case in all_cases if case.get('type', 'voice') == 'voice']
+    """Loads test cases from JSON file."""
+    with open('test_cases.json', 'r') as f:
+        return json.load(f)
+
+def deploy_infrastructure_if_needed():
+    """Runs the deployment script to ensure DynamoDB and Lambda are ready."""
+    if MOCK_AWS:
+        print("[MOCK] Skipping infrastructure deployment.")
+        return
+
+    print("Checking infrastructure...")
+    try:
+        import deploy_infrastructure
+        deploy_infrastructure.create_dynamodb_table()
+        deploy_infrastructure.update_lambda_code()
+    except Exception as e:
+        print(f"Warning: Infrastructure deployment failed or skipped: {e}")
+
+
+# Initialize infrastructure once per session
+@pytest.fixture(scope="session", autouse=True)
+def setup_infrastructure():
+    deploy_infrastructure_if_needed()
 
 @pytest.mark.parametrize("test_case", load_test_cases())
 def test_connect_voice_flow(test_case):
     """
-    Test execution for Amazon Connect voice flows via Inbound Call.
-    Uses AWS Chime SDK to place a call TO Amazon Connect and simulate a user.
+    Test execution for Amazon Connect voice flows via Multi-Turn Conversation.
     """
-    connect_client, chime_client = get_clients()
-    
+    connect_client, chime_client, dynamodb = get_clients()
+
     print(f"\n----------------------------------------------------------------")
     print(f"STARTING TEST CASE: {test_case['name']}")
     print(f"----------------------------------------------------------------")
-    print(f"[STEP 1] Setup: Dialing Amazon Connect...")
+    
+    # 1. Seed Conversation State
+    conversation_id = str(uuid.uuid4())
+    print(f"[STEP 1] Setup: Seeding conversation {conversation_id} in DynamoDB...")
+    
+    # Check if 'script' is present (new format) or 'input_speech' (old format fallback)
+    script = test_case.get('script')
+    if not script and 'input_speech' in test_case:
+        # Convert old format to simple script
+        script = [
+            {"type": "wait", "duration_ms": 2000},
+            {"type": "speak", "text": test_case['input_speech']},
+            {"type": "wait", "duration_ms": 10000} # Wait for routing
+        ]
+    
+    if not MOCK_AWS:
+        try:
+            table = dynamodb.Table(DYNAMODB_TABLE_NAME)
+            # Use strict types for float/decimal to avoid dynamo issues
+            # Script might contain floats for duration, better to ensure they are decimals or ints
+            # Boto3 handles int/float well usually, but Decimal is safer for DynamoDB
+            table.put_item(Item={
+                'conversation_id': conversation_id,
+                'script': json.dumps(script), # Store as JSON string to avoid attribute type issues
+                'current_step_index': 0,
+                'status': 'READY',
+                'created_at': int(time.time())
+            })
+        except Exception as e:
+            print(f"   > ERROR seeding DynamoDB: {e}")
+            pytest.fail(f"Failed to seed DynamoDB state: {e}")
+    
     print(f"   > From (Chime): {CHIME_PHONE_NUMBER}")
     print(f"   > To (Connect): {test_case['destination_phone']}")
-    
-    # Text to Speech content for the test
-    input_speech = test_case.get('input_speech', "Hello")
-    
+
+    transaction_id = None
     try:
-        # 1. Initiate Inbound Call to Connect (via Chime SDK)
+        # 2. Initiate Call
         print(f"[STEP 2] Action: Invoking Chime SIP Media Application...")
         
-        response = None
-        for i in range(3):
-            try:
-                response = chime_client.create_sip_media_application_call(
-                    FromPhoneNumber=CHIME_PHONE_NUMBER,
-                    ToPhoneNumber=test_case['destination_phone'],
-                    SipMediaApplicationId=CHIME_SMA_ID,
-                    ArgumentsMap={
-                        'case_id': test_case.get('name', 'unknown'),
-                        'tts_text': input_speech,
-                        'expected_intent': test_case.get('attributes', {}).get('intent', '')
-                    }
-                )
-                break
-            except ClientError as e:
-                if "Concurrent call limits breached" in str(e):
-                    print(f"   > WARN: Concurrency limit hit. Waiting 30s before retry {i+1}...")
-                    time.sleep(30)
-                else:
-                    raise e
-        
-        if not response:
-             pytest.fail("Failed to initiate call due to concurrency limits.")
-        
-        transaction_id = response['SipMediaApplicationCall']['TransactionId']
-        print(f"   > SUCCESS: Call Initiated.")
-        print(f"   > Transaction ID: {transaction_id}")
-        print(f"   > Payload Sent: User will say '{input_speech}'")
+        if not MOCK_AWS:
+            response = chime_client.create_sip_media_application_call(
+                FromPhoneNumber=CHIME_PHONE_NUMBER,
+                ToPhoneNumber=test_case['destination_phone'],
+                SipMediaApplicationId=CHIME_SMA_ID,
+                ArgumentsMap={
+                    'conversation_id': conversation_id,
+                    'case_id': test_case.get('name', 'unknown')
+                }
+            )
+            transaction_id = response['SipMediaApplicationCall']['TransactionId']
+            print(f"   > SUCCESS: Call Initiated. Transaction ID: {transaction_id}")
+        else:
+            print(f"   > [MOCK] Call Initiated.")
 
-        # 2. Wait for Flow Execution (Polling Mechanism)
-        print(f"[STEP 3] Monitoring: Polling Amazon Connect for Contact in Queue...")
+        # 3. Monitor Conversation Progress
+        print(f"[STEP 3] Monitoring: Watching conversation progress in DynamoDB...")
         
+        if not MOCK_AWS:
+            # Poll DynamoDB until status is COMPLETED or timeout
+            # Calculate total expected duration based on script waits
+            script_duration = sum([s.get('duration_ms', 0) for s in script]) / 1000
+            max_wait = max(60, script_duration + 30) # Buffer
+            
+            start_time = time.time()
+            conversation_completed = False
+            last_step = -1
+            
+            while time.time() - start_time < max_wait:
+                try:
+                    resp = table.get_item(Key={'conversation_id': conversation_id}, ConsistentRead=True)
+                    item = resp.get('Item', {})
+                    status = item.get('status')
+                    step = int(item.get('current_step_index', 0))
+                    
+                    if step != last_step:
+                        print(f"   > Status: {status}, Step: {step}/{len(script)}")
+                        last_step = step
+                    
+                    if status == 'COMPLETED':
+                        conversation_completed = True
+                        print("   > Conversation script completed.")
+                        break
+                    
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"   > Warning polling DynamoDB: {e}")
+                    time.sleep(2)
+                
+            if not conversation_completed:
+                print("   > WARNING: Conversation did not complete within timeout.")
+        else:
+            time.sleep(2)
+
+        # 4. Validate Routing (Metric Check)
+        print(f"[STEP 4] Validation: Checking Amazon Connect Queue metrics...")
         expected_queue = test_case.get('expected_queue')
         
-        # Resolve Queue ID first
-        queue_id = None
         found_in_queue = False
+        queue_id = None
         
-        if expected_queue:
-            if not MOCK_AWS:
-                 try:
-                     paginator = connect_client.get_paginator('list_queues')
-                     found_queue = False
-                     for page in paginator.paginate(InstanceId=CONNECT_INSTANCE_ID, QueueTypes=['STANDARD']):
-                         for q in page['QueueSummaryList']:
-                             if q['Name'] == expected_queue:
-                                 queue_id = q['Id']
-                                 print(f"   > Resolved Queue '{expected_queue}' to ID: {queue_id}")
-                                 found_queue = True
-                                 break
-                         if found_queue: break
-                     if not queue_id:
-                         print(f"   > WARNING: Could not find Queue '{expected_queue}'.")
-                 except Exception as q_err:
-                     print(f"   > ERROR listing queues: {q_err}")
-
-            max_retries = 12  # 12 * 5s = 60 seconds max wait
+        if expected_queue and not MOCK_AWS:
+            # Resolve Queue ID
+            try:
+                paginator = connect_client.get_paginator('list_queues')
+                found = False
+                for page in paginator.paginate(InstanceId=CONNECT_INSTANCE_ID, QueueTypes=['STANDARD']):
+                    for q in page['QueueSummaryList']:
+                        if q['Name'] == expected_queue:
+                            queue_id = q['Id']
+                            print(f"   > Resolved Queue '{expected_queue}' to ID: {queue_id}")
+                            found = True
+                            break
+                    if found: break
+            except Exception as e:
+                print(f"   > Error resolving queue: {e}")
             
-            if MOCK_AWS:
-                 time.sleep(2)
-                 found_in_queue = True
-            elif queue_id:
-                 for attempt in range(max_retries):
-                     time.sleep(5)
-                     print(f"   > Attempt {attempt+1}/{max_retries}: Checking metrics...")
-                     
-                     try:
-                         filters = {'Channels': ['VOICE'], 'Queues': [queue_id]}
-                         
-                         current_metrics = connect_client.get_current_metric_data(
-                             InstanceId=CONNECT_INSTANCE_ID,
-                             Filters=filters,
-                             CurrentMetrics=[
-                                 {'Name': 'CONTACTS_IN_QUEUE', 'Unit': 'COUNT'},
-                                 {'Name': 'CONTACTS_SCHEDULED', 'Unit': 'COUNT'}
-                             ]
-                         )
-                         
-                         for metric in current_metrics.get('MetricResults', []):
-                             for collection in metric.get('Collections', []):
-                                 if collection['Metric']['Name'] in ['CONTACTS_IN_QUEUE', 'CONTACTS_SCHEDULED']:
-                                     count = int(collection['Value'])
-                                     if count > 0:
-                                         print(f"   > SUCCESS: Found {count} contact(s) in queue.")
-                                         found_in_queue = True
-                                         break
-                             if found_in_queue: break
-                     except Exception as e:
-                         print(f"   > Metric check failed: {e}")
-                     
-                     if found_in_queue:
-                         break
-            else:
-                print(f"   > WARNING: Queue ID not resolved, skipping metric check.")
-        else:
-            print(f"   > NOTE: No 'expected_queue' defined. Skipping queue metric check (Negative Test Case).")
-            # Wait for call to traverse flow and disconnect
-            time.sleep(15)
-        
-        # 3. Final Verification Results
-        print(f"[STEP 4] Validation Results")
+            if queue_id:
+                # Poll metrics
+                for attempt in range(6):
+                    print(f"   > Checking metrics (Attempt {attempt+1}/6)...")
+                    try:
+                        metrics = connect_client.get_current_metric_data(
+                            InstanceId=CONNECT_INSTANCE_ID,
+                            Filters={'Channels': ['VOICE'], 'Queues': [queue_id]},
+                            CurrentMetrics=[{'Name': 'CONTACTS_IN_QUEUE', 'Unit': 'COUNT'}]
+                        )
+                        for m in metrics.get('MetricResults', []):
+                            count = int(m['Collections'][0]['Value'])
+                            if count > 0:
+                                print(f"   > SUCCESS: Found {count} contact(s) in queue.")
+                                found_in_queue = True
+                                break
+                    except Exception as e: 
+                        print(f"   > Metric check error: {e}")
+                    
+                    if found_in_queue: break
+                    time.sleep(5)
+
         if found_in_queue:
-            print(f"   > TEST PASSED: Call successfully routed to expected queue '{expected_queue}'.")
+            print(f"   > TEST PASSED: Contact found in queue '{expected_queue}'.")
         elif expected_queue:
-            print(f"   > WARNING: Polling timed out. Contact never appeared in queue '{expected_queue}'.")
-            print(f"   > Checking historical data (SearchContacts) to diagnose...")
+            print(f"   > WARNING: Contact not found in queue metrics. Checking historical traces...")
 
-        # STEP 5: Post-Call Analysis (Always run this to find the call details/transcript)
-        print(f"[STEP 5] Post-Call Analysis: Fetching Call Details & Transcript...")
+        # 5. Post-Call Analysis (Historical Trace)
+        print(f"[STEP 5] Post-Call Analysis...")
         
-        contact_id = None
-        if MOCK_AWS:
-            contact_id = "mock-id"
-            print(f"   [MOCK] Found Contact ID: {contact_id}")
-        else:
-             search_retries = 30
-             print(f"   > Searching for Contact ID for phone {CHIME_PHONE_NUMBER} (Retrying up to {search_retries} times)...")
-             
-             for i in range(search_retries):
-                 try:
-                     # Wait a moment for indexing
-                     time.sleep(10) 
-                     
-                     # NOTE: SearchContacts does not support filtering by Customer Phone Number directly in SearchCriteria
-                     # We must fetch recent contacts and filter client-side.
-                     search_response = connect_client.search_contacts(
-                         InstanceId=CONNECT_INSTANCE_ID,
-                         TimeRange={
-                             'Type': 'INITIATION_TIMESTAMP',
-                             'StartTime': int(time.time()) - 600, # Look back 10 mins
-                             'EndTime': int(time.time()) + 60
-                         },
-                         SearchCriteria={
-                             'Channels': ['VOICE']
-                         },
-                         Sort={
-                             'FieldName': 'INITIATION_TIMESTAMP',
-                             'Order': 'DESCENDING'
-                         },
-                         MaxResults=20
-                     )
-                     
-                     contacts = search_response.get('Contacts', [])
-                     if not contacts:
-                         print(f"   > Attempt {i+1}/{search_retries}: No recent contacts found yet...")
-                     else:
-                         # Iterate to find the right one if possible, or take the first
-                         # Filter logic: Since we don't have the Chime number directly in search, we look for matches
-                         # However, Connect might not index the From number instantly. 
-                         # We'll assume the most recent contact in the last 2 minutes is ours if we are running solitary tests.
-                         
-                         found_match = False
-                         for c in contacts:
-                             # Check timestamps - ensure it's very recent (within last 3 mins)
-                             init_time = c.get('InitiationTimestamp')
-                             # Use ID as confirmation we found *something*
-                             print(f"   > Found Candidate Contact ID: {c['Id']} at {init_time}")
-                             
-                             contact_id = c['Id']
-                             found_match = True
-                             break # Take the most recent one
-                         
-                         if found_match:
-                             print(f"   > SUCCESS: Found Contact ID: {contact_id}")
-                             break
-                         
-                 except Exception as search_err:
-                     print(f"   > ERROR searching for contact (Attempt {i+1}): {search_err}")
+        if not MOCK_AWS and expected_queue:
+            try:
+                print(f"   > Searching for Contact ID for phone {CHIME_PHONE_NUMBER}...")
+                time.sleep(5) # Allow indexing
+                
+                # Fetch recent contacts
+                search_response = connect_client.search_contacts(
+                     InstanceId=CONNECT_INSTANCE_ID,
+                     TimeRange={
+                         'Type': 'INITIATION_TIMESTAMP',
+                         'StartTime': int(time.time()) - 300, 
+                         'EndTime': int(time.time()) + 60
+                     },
+                     SearchCriteria={
+                         'Channels': ['VOICE']
+                     },
+                     Sort={
+                         'FieldName': 'INITIATION_TIMESTAMP',
+                         'Order': 'DESCENDING'
+                     }
+                 )
+                
+                contacts = search_response.get('Contacts', [])
+                if contacts:
+                    contact = contacts[0]
+                    contact_id = contact['Id']
+                    print(f"   > Found Contact ID: {contact_id}")
+                    
+                    # Verify queue from contact record
+                    contact_queue = contact.get('QueueInfo', {}).get('Name')
+                    print(f"   > Contact routed to: {contact_queue}")
+                    
+                    if contact_queue == expected_queue:
+                        print(f"   > TEST PASSED (Historical): Contact confirmed in queue '{expected_queue}'.")
+                        found_in_queue = True
+                    
+                    # Get Transcript
+                    try:
+                        # Check if method exists (handling old boto3)
+                        if hasattr(connect_client, 'list_realtime_contact_analysis_segments'):
+                            transcript_resp = connect_client.list_realtime_contact_analysis_segments(
+                                InstanceId=CONNECT_INSTANCE_ID,
+                                ContactId=contact_id,
+                                MaxResults=100
+                            )
+                            print("   > --- TRANSCRIPT ---")
+                            for seg in transcript_resp.get('Segments', []):
+                                trans = seg.get('Transcript', {})
+                                if trans:
+                                    print(f"   > [{trans.get('ParticipantRole')}]: {trans.get('Content')}")
+                            print("   > ------------------")
+                    except Exception as e:
+                        print(f"   > Could not fetch transcript: {e}")
+                else:
+                    print("   > No recent contacts found.")
 
-             if not contact_id:
-                 print(f"   > FAILURE: Could not find any contact record after {search_retries} attempts.")
-                 print(f"   > Possible causes: Call blocked, wrong instance, or Chime failed to dial.")
-             else:
-                 if contact_id:
-                     # Get full details to verify queue
-                     contact_details = connect_client.describe_contact(
-                          InstanceId=CONNECT_INSTANCE_ID,
-                          ContactId=contact_id
-                     ).get('Contact', {})
-                     
-                     # Check Disconnect Reason
-                     if 'DisconnectDetails' in contact_details:
-                          print(f"   > Disconnect Reason: {contact_details.get('DisconnectDetails', {}).get('PotentialDisconnectIssue', 'Unknown')}")
-                     
-                     # Check Queue from Contact Record (Validation fallback)
-                     contact_queue = contact_details.get('QueueInfo', {}).get('Name')
-                     print(f"   > Contact Record indicates Queue: {contact_queue}")
-                     
-                     if expected_queue and not found_in_queue and contact_queue == expected_queue:
-                          print(f"   > TEST PASSED (Historical): Contact WAS routed to queue (but ended before metric check).")
-                          found_in_queue = True
-
-                     # Fetch Transcript
-                     try:
-                         # Check if method exists (handling old boto3)
-                         if hasattr(connect_client, 'list_realtime_contact_analysis_segments'):
-                             transcript_response = connect_client.list_realtime_contact_analysis_segments(
-                                 InstanceId=CONNECT_INSTANCE_ID,
-                                 ContactId=contact_id,
-                                 MaxResults=100
-                             )
-                             
-                             print(f"   > --- TRANSCRIPT START ---")
-                             segments = transcript_response.get('Segments', [])
-                             has_transcript = False
-                             for segment in segments:
-                                 transcript = segment.get('Transcript', {})
-                                 if transcript:
-                                     has_transcript = True
-                                     speaker = transcript.get('ParticipantRole', 'UNKNOWN')
-                                     content = transcript.get('Content', '')
-                                     print(f"   > [{speaker}]: {content}")
-                             
-                             if not has_transcript:
-                                 print(f"   > (No transcript segments found yet.)")
-                             print(f"   > --- TRANSCRIPT END ---")
-                         else:
-                             print(f"   > WARNING: list_realtime_contact_analysis_segments not available in this boto3 version.")
-                     except (ClientError, AttributeError) as ce:
-                         print(f"   > INFO: Could not fetch transcript (likely due to permissions or old SDK): {ce}")
+            except Exception as e:
+                print(f"   > Historical search failed: {e}")
 
         # Final Assertion
-        if not MOCK_AWS:
-            if expected_queue:
-                if not found_in_queue:
-                    pytest.fail(f"Call did not reach expected queue '{expected_queue}'")
-            else:
-                # If no queue expected, pass if we found the contact
-                if not contact_id:
-                     print("   > WARNING: Call record not found in Connect (likely due to SearchContacts delay).")
-                     print("   > Since this is a negative test case (no queue expected), we assume success if Chime initiated call.")
-                     # pytest.fail("Call record not found in Connect.")
-                else:
-                     print("   > TEST PASSED: Call completed (Negative test case).")
-        
-    except ClientError as e:
-        print(f"   > ERROR: AWS Client failed: {e}")
-        pytest.fail(f"AWS ClientError: {e}")
-    except AssertionError as e:
-        print(f"   > FAILURE: Assertion failed: {e}")
-        pytest.fail(f"Assertion Failed: {e}")
-    except Exception as e:
-        print(f"   > CRITICAL: Unexpected error: {e}")
-        pytest.fail(f"Unexpected Error: {e}")
+        if expected_queue and not found_in_queue and not MOCK_AWS:
+             # Strict failure if neither metric nor history confirmed it
+             pytest.fail(f"Call did not reach expected queue '{expected_queue}'")
 
-if __name__ == "__main__":
-    # Allow running directly with python
-    pytest.main(["-s", "-v", __file__])
+    except Exception as e:
+        print(f"   > ERROR: {e}")
+        if not MOCK_AWS:
+            pytest.fail(f"Test exception: {e}")

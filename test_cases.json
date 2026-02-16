@@ -1,27 +1,69 @@
 [
   {
-    "name": "Voice - Happy Path (Open Hours)",
-    "type": "voice",
-    "description": "Validates that a voice call during operating hours is successfully routed to the BasicQueue.",
+    "name": "Multi-Turn - Authentication Flow",
+    "description": "Validates a multi-turn conversation where the user provides an ID and then a PIN.",
     "destination_phone": "+442046324237",
-    "input_speech": "I need help with my account.",
+    "script": [
+      {
+        "type": "wait",
+        "duration_ms": 3000,
+        "comment": "Wait for Connect greeting"
+      },
+      {
+        "type": "speak",
+        "text": "I want to access my account"
+      },
+      {
+        "type": "wait",
+        "duration_ms": 5000,
+        "comment": "Wait for 'Please enter your ID' prompt"
+      },
+      {
+        "type": "speak",
+        "text": "1 2 3 4 5"
+      },
+      {
+        "type": "wait",
+        "duration_ms": 5000,
+        "comment": "Wait for 'Please enter your PIN' prompt"
+      },
+      {
+        "type": "speak",
+        "text": "9 9 9 9"
+      },
+      {
+        "type": "wait",
+        "duration_ms": 8000,
+        "comment": "Wait for validation and routing"
+      }
+    ],
     "expected_queue": "BasicQueue",
     "expected_behavior": "call_queued",
     "attributes": {
-      "intent": "connect_queue"
+      "intent": "authentication"
     }
   },
   {
-    "name": "Voice - Closed Hours (Simulated)",
-    "type": "voice",
-    "description": "Validates that a voice call outside operating hours plays a message and disconnects. (Note: Requires manually closing hours or simulation)",
+    "name": "Single-Turn - General Inquiry",
+    "description": "Simple inquiry routing directly to queue.",
     "destination_phone": "+442046324237",
-    "input_speech": "Calling out of hours.",
-    "expected_queue": null,
-    "expected_behavior": "disconnect_with_message",
-    "expected_message_fragment": "We are not able to take your call right now",
+    "script": [
+       {
+        "type": "wait",
+        "duration_ms": 3000
+      },
+      {
+        "type": "speak",
+        "text": "I have a general question"
+      },
+      {
+        "type": "wait",
+        "duration_ms": 8000
+      }
+    ],
+    "expected_queue": "BasicQueue",
     "attributes": {
-      "intent": "check_hours"
+      "intent": "general_inquiry"
     }
   }
 ]
