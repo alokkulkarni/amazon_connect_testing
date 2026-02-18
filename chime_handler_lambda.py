@@ -19,6 +19,32 @@ def lambda_handler(event, context):
     # Use conversation_id from TransactionAttributes
     conversation_id = transaction_attributes.get('conversation_id')
     
+    # Also check Arguments for outbound calls (NEW_OUTBOUND_CALL)
+    # The API passes 'ArgumentsMap' which appears as 'Arguments' in CallDetails
+    # BUT based on logs, ActionData contains 'Parameters' which contains 'Arguments'
+    if not conversation_id:
+        # 1. Check ActionData -> Parameters -> Arguments (Common for Outbound API)
+        action_data = event.get('ActionData', {})
+        parameters = action_data.get('Parameters', {})
+        arguments = parameters.get('Arguments', {})
+        conversation_id = arguments.get('conversation_id')
+
+        # 2. Check CallDetails -> Arguments (Some contexts)
+        if not conversation_id:
+            args = call_details.get('Arguments', {})
+            conversation_id = args.get('conversation_id')
+        
+        # 3. Check CallDetails -> Parameters (Legacy)
+        if not conversation_id:
+             conversation_id = call_details.get('Parameters', {}).get('conversation_id')
+
+        if conversation_id:
+             print(f"Found conversation_id in Event: {conversation_id}")
+             # Add to transaction attributes so it persists for future invocations
+             if transaction_attributes is None:
+                 transaction_attributes = {}
+             transaction_attributes['conversation_id'] = conversation_id
+    
     # --- Legacy Fallback ---
     if not conversation_id:
         print("No conversation_id found. Checking for legacy 'tts_text'...")
@@ -64,11 +90,34 @@ def lambda_handler(event, context):
     # --- State Machine ---
 
     # 1. NEW_INBOUND_CALL (or RINGING)
-    if event_type in ['NEW_INBOUND_CALL', 'RINGING']:
-        print("Call Ringing/New.")
-        # Usually we just answer or return empty to proceed
-        # For outbound calls (SipMediaApplicationCall), we get RINGING then CALL_ANSWERED
-        return {"SchemaVersion": "1.0", "Actions": []}
+    if event_type in ['NEW_INBOUND_CALL', 'NEW_OUTBOUND_CALL', 'RINGING']:
+        print(f"Call Event: {event_type}")
+        # Return empty actions but INCLUDE TransactionAttributes to persist state
+        # Ensure we return the attributes we modified/found
+        return {
+            "SchemaVersion": "1.0", 
+            "Actions": [],
+            "TransactionAttributes": transaction_attributes
+        }
+        
+    # Handle manual trigger via UpdateSipMediaApplicationCall
+    elif event_type == 'CALL_UPDATE_REQUESTED':
+        print("Received CALL_UPDATE_REQUESTED")
+        args = event.get('ActionData', {}).get('Parameters', {}).get('Arguments', {})
+        if args.get('action') == 'hangup':
+             print("Manual hangup requested.")
+             actions = [{
+                "Type": "Hangup",
+                "Parameters": {
+                    "SipResponseCode": "0",
+                    "ParticipantTag": "LEG-A"
+                }
+            }]
+             return {
+                "SchemaVersion": "1.0",
+                "Actions": actions,
+                "TransactionAttributes": transaction_attributes
+            }
 
     # 2. CALL_ANSWERED: Start the conversation
     elif event_type == 'CALL_ANSWERED':
@@ -81,36 +130,22 @@ def lambda_handler(event, context):
     elif event_type == 'ACTION_SUCCESSFUL':
         print(f"Action Successful for step {current_step_index}")
         
-        # Increment step
+        # Determine next step
         next_step_index = current_step_index + 1
         
-        # Check if we have more steps
         if next_step_index < len(script):
             print(f"Moving to step {next_step_index}")
             actions = execute_step(script, next_step_index, participants)
             new_status = 'IN_PROGRESS'
         else:
             print("End of script reached.")
-            actions = [{
-                "Type": "Hangup",
-                "Parameters": {
-                    "SipResponseCode": "0",
-                    "ParticipantTag": "LEG-A"
-                }
-            }]
+            # If the script is done, we mark as completed but don't hang up immediately
+            # to allow post-script validation (like agent answer).
             new_status = 'COMPLETED'
-
-    # 4. HANGUP: Mark as completed
-    elif event_type == 'HANGUP':
-        print("Call Hungup.")
-        new_status = 'COMPLETED'
-        actions = [] # No actions on hangup
-
-    # 5. Handle Errors or other events
-    else:
-        print(f"Unhandled event type: {event_type}")
-
+            actions = []
+            
     # --- Update State ---
+    # Only update if changed
     if next_step_index != current_step_index or new_status != status:
         update_state(conversation_id, next_step_index, new_status)
 
@@ -146,6 +181,18 @@ def execute_step(script, step_index, participants):
                 "VoiceId": "Joanna",
                 "CallId": call_id,
                 "TextType": "text"
+            }
+        })
+        
+    elif action_type == 'dtmf':
+        digits = step.get('digits', '')
+        print(f"Generating DTMF action: '{digits}'")
+        actions.append({
+            "Type": "SendDigits",
+            "Parameters": {
+                "CallId": call_id,
+                "Digits": digits,
+                "ToneDurationInMilliseconds": 250
             }
         })
         

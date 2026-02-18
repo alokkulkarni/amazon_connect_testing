@@ -111,13 +111,24 @@ def get_or_create_lambda(lambda_client, iam_role_arn):
         waiter = lambda_client.get_waiter('function_active')
         waiter.wait(FunctionName=LAMBDA_FUNCTION_NAME)
 
-    # Add permission for Chime to invoke Lambda
+    # Add permission for Chime to invoke Lambda (Voice Connector)
     try:
         lambda_client.add_permission(
             FunctionName=LAMBDA_FUNCTION_NAME,
-            StatementId='ChimeInvokePermission',
+            StatementId='ChimeVoiceConnectorInvokePermission',
             Action='lambda:InvokeFunction',
             Principal='voiceconnector.chime.amazonaws.com'
+        )
+    except lambda_client.exceptions.ResourceConflictException:
+        pass # Already exists
+
+    # Add permission for Chime to invoke Lambda (SIP Media Application)
+    try:
+        lambda_client.add_permission(
+            FunctionName=LAMBDA_FUNCTION_NAME,
+            StatementId='ChimeSMAInvokePermission',
+            Action='lambda:InvokeFunction',
+            Principal='chime.amazonaws.com'
         )
     except lambda_client.exceptions.ResourceConflictException:
         pass # Already exists
@@ -185,6 +196,47 @@ def provision_phone_number(chime, sma_id):
     print("WARNING: No available phone number found in inventory.")
     return None
 
+def create_sip_rule(chime, sma_id, phone_number):
+    if not phone_number:
+        print("Skipping SIP Rule creation (no phone number).")
+        return
+
+    print(f"Checking SIP Rule for {phone_number}...")
+    rule_name = f"Rule-{phone_number.replace('+', '')}"
+    
+    try:
+        # Check existing rules
+        rules = chime.list_sip_rules()
+        for rule in rules.get('SipRules', []):
+            if rule['TriggerValue'] == phone_number:
+                print(f"Found existing SIP Rule: {rule['SipRuleId']}")
+                
+                current_sma = None
+                if rule.get('TargetApplications'):
+                    current_sma = rule['TargetApplications'][0]['SipMediaApplicationId']
+                
+                if current_sma != sma_id:
+                    print(f"Updating SIP Rule to point to SMA {sma_id}...")
+                    chime.update_sip_rule(
+                        SipRuleId=rule['SipRuleId'],
+                        Name=rule_name,
+                        TargetApplications=[{'SipMediaApplicationId': sma_id, 'Priority': 1}]
+                    )
+                return rule['SipRuleId']
+        
+        # Create new rule
+        print(f"Creating SIP Rule for {phone_number}...")
+        response = chime.create_sip_rule(
+            Name=rule_name,
+            TriggerType='ToPhoneNumber',
+            TriggerValue=phone_number,
+            TargetApplications=[{'SipMediaApplicationId': sma_id, 'Priority': 1}]
+        )
+        return response['SipRule']['SipRuleId']
+
+    except Exception as e:
+        print(f"Error managing SIP Rule: {e}")
+
 def deploy():
     session = boto3.Session(region_name=AWS_REGION)
     dynamodb = session.client('dynamodb')
@@ -197,6 +249,9 @@ def deploy():
     lambda_arn = get_or_create_lambda(lambda_client, role_arn)
     sma_id = get_or_create_sma(chime, lambda_arn)
     phone = provision_phone_number(chime, sma_id)
+    
+    if phone:
+        create_sip_rule(chime, sma_id, phone)
 
     # Output for consumption by other scripts
     output = {

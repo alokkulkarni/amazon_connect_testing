@@ -146,17 +146,34 @@ def test_connect_voice_flow(test_case):
         print(f"[STEP 2] Action: Invoking Chime SIP Media Application...")
         
         if not MOCK_AWS:
-            response = chime_client.create_sip_media_application_call(
-                FromPhoneNumber=CHIME_PHONE_NUMBER,
-                ToPhoneNumber=test_case['destination_phone'],
-                SipMediaApplicationId=CHIME_SMA_ID,
-                ArgumentsMap={
-                    'conversation_id': conversation_id,
-                    'case_id': test_case.get('name', 'unknown')
-                }
-            )
-            transaction_id = response['SipMediaApplicationCall']['TransactionId']
-            print(f"   > SUCCESS: Call Initiated. Transaction ID: {transaction_id}")
+            retries = 3
+            backoff = 2
+            response = None
+            
+            for attempt in range(retries):
+                try:
+                    response = chime_client.create_sip_media_application_call(
+                        FromPhoneNumber=CHIME_PHONE_NUMBER,
+                        ToPhoneNumber=test_case['destination_phone'],
+                        SipMediaApplicationId=CHIME_SMA_ID,
+                        ArgumentsMap={
+                            'conversation_id': conversation_id,
+                            'case_id': test_case.get('name', 'unknown')
+                        }
+                    )
+                    break # Success
+                except Exception as e:
+                    if "Concurrent call limits breached" in str(e) or "ThrottlingException" in str(e):
+                        if attempt < retries - 1:
+                            print(f"   > Concurrent limit hit. Retrying in {backoff}s...")
+                            time.sleep(backoff)
+                            backoff *= 2
+                            continue
+                    raise e
+
+            if response:
+                transaction_id = response['SipMediaApplicationCall']['TransactionId']
+                print(f"   > SUCCESS: Call Initiated. Transaction ID: {transaction_id}")
         else:
             print(f"   > [MOCK] Call Initiated.")
 
@@ -290,6 +307,29 @@ def test_connect_voice_flow(test_case):
 
         if expected_queue and not found_in_queue and not MOCK_AWS:
              print("   > FAILURE: Call did not reach expected queue.")
+
+        # 6. Explicit Cleanup/Hangup
+        if transaction_id and not MOCK_AWS:
+            print(f"[STEP 6] Cleanup: Ending call {transaction_id}...")
+            try:
+                # To hang up a call via API, we can update it with an empty list of actions or a hangup action?
+                # Actually, UpdateSipMediaApplicationCall triggers the Lambda again.
+                # We can trigger a specific event or action.
+                # However, the easiest way is to let the Lambda handle a "Hangup" trigger.
+                # But we don't have a direct API to "Hangup" a specific leg easily without Lambda logic.
+                
+                # ALTERNATIVE: Use the API to update the call with a custom argument that the Lambda recognizes as "Time to Hangup"
+                # The correct method is update_sip_media_application_call
+                chime_client.update_sip_media_application_call(
+                    SipMediaApplicationId=CHIME_SMA_ID,
+                    TransactionId=transaction_id,
+                    Arguments={'action': 'hangup'}
+                )
+                print("   > Sent hangup signal.")
+                # Give it a moment to clear
+                time.sleep(5) 
+            except Exception as e:
+                print(f"   > Error cleaning up call: {e}")
 
     except Exception as e:
         print(f"   > ERROR: {e}")
