@@ -1,69 +1,54 @@
 [
   {
-    "name": "Multi-Turn - Authentication Flow",
-    "description": "Validates a multi-turn conversation where the user provides an ID and then a PIN.",
-    "destination_phone": "+442046324237",
+    "name": "Voice - Happy Path (Open Hours)",
+    "description": "Validates that a voice call during operating hours is successfully routed to the BasicQueue.",
+    "destination_phone": "+18005550100",
     "script": [
       {
+        "type": "speak",
+        "text": "Hello, I am calling to test the open hours flow.",
+        "duration_ms": 2000
+      },
+      {
         "type": "wait",
-        "duration_ms": 3000,
-        "comment": "Wait for Connect greeting"
+        "duration_ms": 5000
       },
       {
         "type": "speak",
-        "text": "I want to access my account"
+        "text": "I am waiting to be connected to an agent.",
+        "duration_ms": 2000
       },
       {
         "type": "wait",
-        "duration_ms": 5000,
-        "comment": "Wait for 'Please enter your ID' prompt"
-      },
-      {
-        "type": "speak",
-        "text": "1 2 3 4 5"
-      },
-      {
-        "type": "wait",
-        "duration_ms": 5000,
-        "comment": "Wait for 'Please enter your PIN' prompt"
-      },
-      {
-        "type": "speak",
-        "text": "9 9 9 9"
-      },
-      {
-        "type": "wait",
-        "duration_ms": 8000,
-        "comment": "Wait for validation and routing"
+        "duration_ms": 10000
       }
     ],
     "expected_queue": "BasicQueue",
     "expected_behavior": "call_queued",
     "attributes": {
-      "intent": "authentication"
+      "intent": "connect_queue"
     }
   },
   {
-    "name": "Single-Turn - General Inquiry",
-    "description": "Simple inquiry routing directly to queue.",
-    "destination_phone": "+442046324237",
+    "name": "Voice - Closed Hours (Simulated)",
+    "description": "Validates that a voice call outside operating hours plays a message and disconnects. (Note: Requires manually closing hours or simulation)",
+    "destination_phone": "+18005550100",
     "script": [
-       {
-        "type": "wait",
-        "duration_ms": 3000
-      },
       {
         "type": "speak",
-        "text": "I have a general question"
+        "text": "Calling out of hours.",
+        "duration_ms": 2000
       },
       {
         "type": "wait",
-        "duration_ms": 8000
+        "duration_ms": 5000
       }
     ],
-    "expected_queue": "BasicQueue",
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_message_fragment": "We are not able to take your call right now",
     "attributes": {
-      "intent": "general_inquiry"
+      "intent": "check_hours"
     }
   }
 ]

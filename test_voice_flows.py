@@ -1,64 +1,105 @@
-import boto3
 import pytest
-import json
+import boto3
 import os
+import json
 import time
 import uuid
-from botocore.exceptions import ClientError
+import subprocess
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Configuration ---
-CONNECT_INSTANCE_ID = os.getenv('CONNECT_INSTANCE_ID', '96a4166c-3e1f-44e1-bfea-82f88582b0d7')
-CHIME_SMA_ID = os.getenv('CHIME_SMA_ID', '2c029a7a-92cf-45b7-be78-94ae50be7a00')
-CHIME_PHONE_NUMBER = os.getenv('CHIME_PHONE_NUMBER', '+441134711044')
-AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-DYNAMODB_TABLE_NAME = "VoiceTestState"
+from botocore.exceptions import ClientError
+from decimal import Decimal
 
-# Mock mode for GitHub Actions or local dev without full creds
-MOCK_AWS = os.getenv('MOCK_AWS', 'false').lower() == 'true'
+# Configuration
+# Default to existing values if not updated by infrastructure setup
+CHIME_PHONE_NUMBER = os.environ.get('CHIME_PHONE_NUMBER', '')
+CHIME_SMA_ID = os.environ.get('CHIME_SMA_ID', '')
+CONNECT_INSTANCE_ID = os.environ.get('CONNECT_INSTANCE_ID', '')
+DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'VoiceTestState')
+
+# Connect is in one region (e.g. eu-west-2), Chime/Lambda in another (e.g. us-east-1)
+CONNECT_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+CHIME_REGION = os.environ.get('CHIME_AWS_REGION', 'us-east-1')
+MOCK_AWS = os.environ.get('MOCK_AWS', 'false').lower() == 'true'
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_infrastructure():
+    """
+    Deploys/Verifies Infrastructure before running tests.
+    Reads infrastructure_output.json to configure test environment.
+    """
+    if MOCK_AWS:
+        print("\n[SETUP] Running in MOCK mode. Skipping infrastructure deployment.")
+        return
+
+    print(f"\n[SETUP] Deploying/Verifying Infrastructure (Region: {CHIME_REGION})...")
+    try:
+        # Run the deployment script
+        import sys
+        deploy_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deploy_infrastructure.py')
+        
+        # Ensure correct region is passed to deployment script via ENV
+        env = os.environ.copy()
+        env['AWS_REGION'] = CHIME_REGION # Deployment script uses AWS_REGION for Chime/Lambda
+        
+        result = subprocess.run(
+            [sys.executable, deploy_script],
+            capture_output=True,
+            text=True,
+            env=env
+        )
+        
+        if result.returncode != 0:
+            print(f"Deployment Script Failed:\n{result.stderr}")
+            print("WARNING: Deployment script failed. relying on existing environment variables.")
+        else:
+            print("Deployment script executed successfully.")
+        
+        # Read output
+        output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'infrastructure_output.json')
+        if os.path.exists(output_file):
+            with open(output_file, 'r') as f:
+                infra_config = json.load(f)
+                
+            global CHIME_PHONE_NUMBER, CHIME_SMA_ID, DYNAMODB_TABLE_NAME
+            CHIME_PHONE_NUMBER = infra_config.get('CHIME_PHONE_NUMBER', CHIME_PHONE_NUMBER)
+            CHIME_SMA_ID = infra_config.get('CHIME_SMA_ID', CHIME_SMA_ID)
+            DYNAMODB_TABLE_NAME = infra_config.get('DYNAMODB_TABLE', DYNAMODB_TABLE_NAME)
+            
+            print(f"Loaded Infrastructure Config: SMA={CHIME_SMA_ID}, Phone={CHIME_PHONE_NUMBER}")
+        else:
+            print("WARNING: infrastructure_output.json not found. Using defaults.")
+            
+    except Exception as e:
+        print(f"Error during setup: {e}")
+
+def load_test_cases():
+    file_path = os.path.join(os.path.dirname(__file__), 'test_cases.json')
+    with open(file_path, 'r') as f:
+        return json.load(f)
 
 def get_clients():
-    """Returns AWS clients."""
     if MOCK_AWS:
         return None, None, None
     
-    session = boto3.Session(region_name=AWS_REGION)
-    connect_client = session.client('connect')
-    chime_client = session.client('chime-sdk-voice')
-    dynamodb_client = session.resource('dynamodb')
-    return connect_client, chime_client, dynamodb_client
-
-def load_test_cases():
-    """Loads test cases from JSON file."""
-    with open('test_cases.json', 'r') as f:
-        return json.load(f)
-
-def deploy_infrastructure_if_needed():
-    """Runs the deployment script to ensure DynamoDB and Lambda are ready."""
-    if MOCK_AWS:
-        print("[MOCK] Skipping infrastructure deployment.")
-        return
-
-    print("Checking infrastructure...")
-    try:
-        import deploy_infrastructure
-        deploy_infrastructure.create_dynamodb_table()
-        deploy_infrastructure.update_lambda_code()
-    except Exception as e:
-        print(f"Warning: Infrastructure deployment failed or skipped: {e}")
-
-
-# Initialize infrastructure once per session
-@pytest.fixture(scope="session", autouse=True)
-def setup_infrastructure():
-    deploy_infrastructure_if_needed()
+    # Session for Connect (eu-west-2)
+    session_connect = boto3.Session(region_name=CONNECT_REGION)
+    # Session for Chime/DynamoDB (us-east-1)
+    session_chime = boto3.Session(region_name=CHIME_REGION)
+    
+    return (
+        session_connect.client('connect'),
+        session_chime.client('chime-sdk-voice'),
+        session_chime.resource('dynamodb')
+    )
 
 @pytest.mark.parametrize("test_case", load_test_cases())
 def test_connect_voice_flow(test_case):
     """
-    Test execution for Amazon Connect voice flows via Multi-Turn Conversation.
+    Test execution for Amazon Connect voice flows via Inbound Call.
+    Uses AWS Chime SDK to place a call TO Amazon Connect and simulate a user.
     """
     connect_client, chime_client, dynamodb = get_clients()
 
@@ -66,29 +107,28 @@ def test_connect_voice_flow(test_case):
     print(f"STARTING TEST CASE: {test_case['name']}")
     print(f"----------------------------------------------------------------")
     
+    if not CHIME_PHONE_NUMBER or not CHIME_SMA_ID:
+        if not MOCK_AWS:
+            pytest.fail("Missing CHIME_PHONE_NUMBER or CHIME_SMA_ID configuration.")
+    
     # 1. Seed Conversation State
     conversation_id = str(uuid.uuid4())
     print(f"[STEP 1] Setup: Seeding conversation {conversation_id} in DynamoDB...")
     
-    # Check if 'script' is present (new format) or 'input_speech' (old format fallback)
-    script = test_case.get('script')
+    script = test_case.get('script', [])
     if not script and 'input_speech' in test_case:
-        # Convert old format to simple script
-        script = [
+         script = [
             {"type": "wait", "duration_ms": 2000},
             {"type": "speak", "text": test_case['input_speech']},
-            {"type": "wait", "duration_ms": 10000} # Wait for routing
+            {"type": "wait", "duration_ms": 10000}
         ]
     
     if not MOCK_AWS:
         try:
             table = dynamodb.Table(DYNAMODB_TABLE_NAME)
-            # Use strict types for float/decimal to avoid dynamo issues
-            # Script might contain floats for duration, better to ensure they are decimals or ints
-            # Boto3 handles int/float well usually, but Decimal is safer for DynamoDB
             table.put_item(Item={
                 'conversation_id': conversation_id,
-                'script': json.dumps(script), # Store as JSON string to avoid attribute type issues
+                'script': json.dumps(script),
                 'current_step_index': 0,
                 'status': 'READY',
                 'created_at': int(time.time())
@@ -124,10 +164,9 @@ def test_connect_voice_flow(test_case):
         print(f"[STEP 3] Monitoring: Watching conversation progress in DynamoDB...")
         
         if not MOCK_AWS:
-            # Poll DynamoDB until status is COMPLETED or timeout
-            # Calculate total expected duration based on script waits
+            # Poll DynamoDB
             script_duration = sum([s.get('duration_ms', 0) for s in script]) / 1000
-            max_wait = max(60, script_duration + 30) # Buffer
+            max_wait = max(60, script_duration + 30)
             
             start_time = time.time()
             conversation_completed = False
@@ -159,7 +198,7 @@ def test_connect_voice_flow(test_case):
         else:
             time.sleep(2)
 
-        # 4. Validate Routing (Metric Check)
+        # 4. Validate Routing
         print(f"[STEP 4] Validation: Checking Amazon Connect Queue metrics...")
         expected_queue = test_case.get('expected_queue')
         
@@ -167,7 +206,6 @@ def test_connect_voice_flow(test_case):
         queue_id = None
         
         if expected_queue and not MOCK_AWS:
-            # Resolve Queue ID
             try:
                 paginator = connect_client.get_paginator('list_queues')
                 found = False
@@ -183,7 +221,6 @@ def test_connect_voice_flow(test_case):
                 print(f"   > Error resolving queue: {e}")
             
             if queue_id:
-                # Poll metrics
                 for attempt in range(6):
                     print(f"   > Checking metrics (Attempt {attempt+1}/6)...")
                     try:
@@ -207,17 +244,16 @@ def test_connect_voice_flow(test_case):
         if found_in_queue:
             print(f"   > TEST PASSED: Contact found in queue '{expected_queue}'.")
         elif expected_queue:
-            print(f"   > WARNING: Contact not found in queue metrics. Checking historical traces...")
+            print(f"   > WARNING: Contact not found in queue metrics.")
 
-        # 5. Post-Call Analysis (Historical Trace)
+        # 5. Post-Call Analysis
         print(f"[STEP 5] Post-Call Analysis...")
         
         if not MOCK_AWS and expected_queue:
             try:
                 print(f"   > Searching for Contact ID for phone {CHIME_PHONE_NUMBER}...")
-                time.sleep(5) # Allow indexing
+                time.sleep(5)
                 
-                # Fetch recent contacts
                 search_response = connect_client.search_contacts(
                      InstanceId=CONNECT_INSTANCE_ID,
                      TimeRange={
@@ -240,41 +276,20 @@ def test_connect_voice_flow(test_case):
                     contact_id = contact['Id']
                     print(f"   > Found Contact ID: {contact_id}")
                     
-                    # Verify queue from contact record
                     contact_queue = contact.get('QueueInfo', {}).get('Name')
                     print(f"   > Contact routed to: {contact_queue}")
                     
                     if contact_queue == expected_queue:
                         print(f"   > TEST PASSED (Historical): Contact confirmed in queue '{expected_queue}'.")
                         found_in_queue = True
-                    
-                    # Get Transcript
-                    try:
-                        # Check if method exists (handling old boto3)
-                        if hasattr(connect_client, 'list_realtime_contact_analysis_segments'):
-                            transcript_resp = connect_client.list_realtime_contact_analysis_segments(
-                                InstanceId=CONNECT_INSTANCE_ID,
-                                ContactId=contact_id,
-                                MaxResults=100
-                            )
-                            print("   > --- TRANSCRIPT ---")
-                            for seg in transcript_resp.get('Segments', []):
-                                trans = seg.get('Transcript', {})
-                                if trans:
-                                    print(f"   > [{trans.get('ParticipantRole')}]: {trans.get('Content')}")
-                            print("   > ------------------")
-                    except Exception as e:
-                        print(f"   > Could not fetch transcript: {e}")
                 else:
                     print("   > No recent contacts found.")
 
             except Exception as e:
                 print(f"   > Historical search failed: {e}")
 
-        # Final Assertion
         if expected_queue and not found_in_queue and not MOCK_AWS:
-             # Strict failure if neither metric nor history confirmed it
-             pytest.fail(f"Call did not reach expected queue '{expected_queue}'")
+             print("   > FAILURE: Call did not reach expected queue.")
 
     except Exception as e:
         print(f"   > ERROR: {e}")

@@ -1,0 +1,1 @@
+{"CHIME_SMA_ID": "90ff4777-ec49-47f2-9587-f4e33789f9ac", "CHIME_PHONE_NUMBER": "+441134711044", "LAMBDA_ARN": "arn:aws:lambda:us-east-1:395402194296:function:ChimeSMAHandler", "DYNAMODB_TABLE": "VoiceTestState"}
