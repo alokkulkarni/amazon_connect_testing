@@ -1,88 +1,331 @@
 [
   {
-    "name": "Voice - Happy Path (Open Hours)",
-    "description": "Validates that a voice call during operating hours is successfully routed to the BasicQueue.",
+    "name": "CF-E2E-001 Voice - First Call Happy Path (Press 1, Queue Config Flow)",
+    "_comment": "E2E path: UpdateContactEventHooks → Channel=VOICE → greetingPlayed=null → SetAttr(greetingPlayed=true) → VoiceGreeting → DTMF Menu → Press 1 → TransferToFlow(SampleQueueConfigurations)",
+    "description": "First-time VOICE caller. Flow sets greetingPlayed=true, plays voice greeting, caller presses 1 to join queue via Sample Queue Configurations Flow. Validates greetingPlayed attribute is set and call reaches queue.",
     "destination_phone": "+442046324431",
     "script": [
-      {
-        "type": "speak",
-        "text": "Hello, I am calling to test the open hours flow.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 5000
-      },
-      {
-        "type": "speak",
-        "text": "I am waiting to be connected to an agent.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 10000
-      }
+      { "type": "wait",  "duration_ms": 5000,  "_comment": "Allow greeting to play" },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000, "_comment": "Press 1 = Queue Configurations Flow" },
+      { "type": "wait",  "duration_ms": 10000, "_comment": "Allow routing to complete" }
     ],
     "expected_queue": "BasicQueue",
     "expected_behavior": "call_queued",
-    "attributes": {
-      "intent": "connect_queue"
-    }
+    "expected_contact_attributes": { "greetingPlayed": "true" },
+    "attributes": { "intent": "connect_queue" }
   },
   {
-    "name": "Voice - Closed Hours (Simulated)",
-    "description": "Validates that a voice call outside operating hours plays a message and disconnects. (Note: Requires manually closing hours or simulation)",
+    "name": "CF-E2E-002 Voice - Returning Caller (greetingPlayed=true, Skip Greeting, Press 1)",
+    "_comment": "E2E path: UpdateContactEventHooks → Channel=VOICE → greetingPlayed=true → Skip greeting → DTMF Menu → Press 1 → TransferToFlow(SampleQueueConfigurations). Tests the greetingPlayed branch that bypasses the greeting message.",
+    "description": "Returning VOICE caller where greetingPlayed contact attribute is already 'true'. Flow should skip the greeting and go directly to DTMF menu. Caller presses 1.",
+    "destination_phone": "+442046324431",
+    "pre_set_attributes": { "greetingPlayed": "true" },
+    "script": [
+      { "type": "wait",  "duration_ms": 3000,  "_comment": "Shorter wait — no greeting to play" },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 10000 }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "greetingPlayed": "true" },
+    "attributes": { "intent": "connect_queue_returning" }
+  },
+  {
+    "name": "CF-E2E-003 Voice - Press 2 (Secure Input Flow)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → Press 2 → TransferToFlow(SampleSecureInputWithNoAgent). Tests that the secure input sub-flow is invoked correctly.",
+    "description": "Caller presses 2 at the DTMF menu. Flow transfers to 'Sample secure input with no agent'. Validates the contact reaches the secure input flow without an agent connection attempt.",
     "destination_phone": "+442046324431",
     "script": [
-      {
-        "type": "speak",
-        "text": "Calling out of hours.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 5000
-      }
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "2",        "duration_ms": 1000, "_comment": "Press 2 = Secure Input" },
+      { "type": "wait",  "duration_ms": 10000 }
     ],
     "expected_queue": null,
     "expected_behavior": "disconnect_with_message",
-    "expected_message_fragment": "We are not able to take your call right now",
-    "attributes": {
-      "intent": "check_hours"
-    }
+    "expected_flow_transfer": "Sample secure input with no agent",
+    "attributes": { "intent": "secure_input" }
   },
   {
-    "name": "Voice - Multi-Turn Menu Navigation",
-    "description": "Navigates the main menu by selecting option 1 to enter the queue flow.",
+    "name": "CF-E2E-004 Voice - Press 3 (Lambda Integration Flow)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → Press 3 → TransferToFlow(SampleLambdaIntegration). Tests the Lambda data-dip sub-flow transfer.",
+    "description": "Caller presses 3 at the DTMF menu. Flow transfers to 'Sample Lambda integration'. Validates successful flow transfer and no DTMF menu loop.",
     "destination_phone": "+442046324431",
     "script": [
-      {
-        "type": "wait",
-        "duration_ms": 8000
-      },
-      {
-        "type": "dtmf",
-        "digits": "1",
-        "duration_ms": 1000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 5000
-      },
-      {
-        "type": "speak",
-        "text": "I am waiting for an agent.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 10000
-      }
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "3",        "duration_ms": 1000, "_comment": "Press 3 = Lambda Integration" },
+      { "type": "wait",  "duration_ms": 12000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_flow_transfer": "Sample Lambda integration",
+    "attributes": { "intent": "lambda_dip" }
+  },
+  {
+    "name": "CF-E2E-005 Voice - Press 4 (Screen Pop / Note Flow)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → Press 4 → TransferToFlow(SampleNoteForScreenpop). Tests screen pop attribute injection sub-flow.",
+    "description": "Caller presses 4 at the DTMF menu to set a screen pop for the agent. Flow transfers to 'Sample note for screenpop'. Validates the flow transfer and resulting disconnect.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "4",        "duration_ms": 1000, "_comment": "Press 4 = Screen Pop" },
+      { "type": "wait",  "duration_ms": 12000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_flow_transfer": "Sample note for screenpop",
+    "attributes": { "intent": "screen_pop" }
+  },
+  {
+    "name": "CF-E2E-006 Voice - Press 5 (AB Test Flow)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → Press 5 → TransferToFlow(SampleABTest). Tests the A/B test simulation sub-flow branch.",
+    "description": "Caller presses 5 at the DTMF menu to experience the A/B test simulation. Flow transfers to 'Sample AB test'. Validates flow transfer without error.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "5",        "duration_ms": 1000, "_comment": "Press 5 = AB Test" },
+      { "type": "wait",  "duration_ms": 12000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_flow_transfer": "Sample AB test",
+    "attributes": { "intent": "ab_test" }
+  },
+  {
+    "name": "CF-E2E-007 Voice - Press 6 (Recording Behavior Flow)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → Press 6 → TransferToFlow(SampleRecordingBehavior). Tests explicit recording-behavior sub-flow selection.",
+    "description": "Caller presses 6 at the DTMF menu to set call recording behaviour. Flow transfers to 'Sample recording behavior'. Validates the correct flow invocation.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "6",        "duration_ms": 1000, "_comment": "Press 6 = Recording Behavior" },
+      { "type": "wait",  "duration_ms": 12000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_flow_transfer": "Sample recording behavior",
+    "attributes": { "intent": "recording_behavior" }
+  },
+  {
+    "name": "CF-E2E-008 Voice - Press 7 (Create Agent Task then Disconnect)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → Press 7 → CreateTask(SampleTask, CustomerPhoneNumber + Type=inbound) → DisconnectParticipant. Tests the CreateTask block and terminal disconnect.",
+    "description": "Caller presses 7 to create an agent task. Flow executes CreateTask with CustomerPhoneNumber and Type=inbound attributes, then disconnects. Validates disconnect without agent and task creation (AgentConnectionAttempts=0).",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "7",        "duration_ms": 1000, "_comment": "Press 7 = Create Task" },
+      { "type": "wait",  "duration_ms": 8000,  "_comment": "CreateTask completes then disconnects" }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_contact_attributes": {},
+    "attributes": { "intent": "create_task" }
+  },
+  {
+    "name": "CF-E2E-009 Voice - DTMF Menu Timeout (InputTimeLimitExceeded → Queue Config Flow)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → no input for 8 seconds → InputTimeLimitExceeded error → TransferToFlow(SampleQueueConfigurations). Tests the timeout fallback branch of GetParticipantInput.",
+    "description": "Caller does not press any key within the 8-second input window. The InputTimeLimitExceeded error path fires, routing to 'Sample Queue Configurations Flow' same as pressing 1. Validates that silence results in queue routing.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000,  "_comment": "Wait for greeting to finish" },
+      { "type": "wait",  "duration_ms": 9000,  "_comment": "Deliberately exceed 8s input timeout — no DTMF sent" }
     ],
     "expected_queue": "BasicQueue",
     "expected_behavior": "call_queued",
-    "attributes": {
-      "intent": "connect_queue"
-    }
+    "attributes": { "intent": "timeout_fallback" }
+  },
+  {
+    "name": "CF-E2E-010 Voice - DTMF Menu Invalid Key (NoMatchingCondition → Recording Flow)",
+    "_comment": "E2E path: Entry → VOICE branch → Greeting → DTMF Menu → Press 9 (no branch) → NoMatchingCondition error → TransferToFlow(SampleRecordingBehavior). Tests the no-match fallback branch.",
+    "description": "Caller presses an undefined key (9) that has no matching condition. The NoMatchingCondition error path routes to 'Sample recording behavior' (same as pressing 6). Validates the no-match branch is correctly configured.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "9",        "duration_ms": 1000, "_comment": "Invalid key — no DTMF branch matches" },
+      { "type": "wait",  "duration_ms": 10000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_flow_transfer": "Sample recording behavior",
+    "attributes": { "intent": "invalid_dtmf_key" }
+  },
+  {
+    "name": "CF-E2E-011 Voice - TransferToFlow Error Path (Error Message + Disconnect)",
+    "_comment": "E2E path: Any TransferToFlow block failure → NoMatchingError → MessageParticipant('We're sorry, an error occurred. Goodbye.') → DisconnectParticipant. This path is shared by all 7 sub-flow transfer blocks.",
+    "description": "Simulates a TransferToFlow error by validating the error-path message block exists and leads to disconnect. Expects 'error occurred' message and AgentConnectionAttempts=0. Modelled by pressing an option against a non-existent target flow ARN (controlled by injecting a bad flow ID via test attribute).",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 12000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_message_fragment": "We're sorry, an error occurred",
+    "attributes": { "intent": "error_path_validation", "simulate_transfer_error": "true" }
+  },
+  {
+    "name": "CF-UNIT-001 Channel Branch - VOICE default (NoMatchingCondition on Compare)",
+    "_comment": "Unit-level: UpdateContactEventHooks → Compare($.Channel) — VOICE does not match CHAT or TASK, falls through NoMatchingCondition to greetingPlayed check. Validates the default/fallthrough branch of the channel compare block.",
+    "description": "Validates that a VOICE channel call correctly falls through the NoMatchingCondition on the Channel Compare block and proceeds to the greetingPlayed attribute check.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 3000  },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "greetingPlayed": "true" },
+    "attributes": { "intent": "channel_voice_default" }
+  },
+  {
+    "name": "CF-UNIT-002 UpdateContactAttributes - greetingPlayed Set on First Call",
+    "_comment": "Unit-level: Tests the UpdateContactAttributes block (a456069e) that sets greetingPlayed=true. Verified via get_contact_attributes post-call. This block only fires when greetingPlayed is NOT already 'true'.",
+    "description": "Validates that the UpdateContactAttributes block correctly sets greetingPlayed='true' on a first-time call (attribute not previously set). Post-call CTR attribute check confirms the value.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "greetingPlayed": "true" },
+    "attributes": { "intent": "greeting_attribute_set" }
+  },
+  {
+    "name": "CF-UNIT-003 GetParticipantInput - All 7 Menu Options Reachable (Press 1)",
+    "_comment": "Unit-level: Validates the GetParticipantInput block (98a70ec0) correctly routes for each digit. This case covers the '1' branch calling ae54d6c1 (TransferToFlow SampleQueueConfigurations).",
+    "description": "Validates option 1 of the 7-option DTMF menu routes to Sample Queue Configurations Flow. Input prompt reads 'Press 1 to be put in queue for an agent'.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 10000 }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "attributes": { "intent": "dtmf_menu_option_1" }
+  },
+  {
+    "name": "CF-UNIT-004 CreateTask Block - CustomerPhoneNumber and Type Attributes",
+    "_comment": "Unit-level: Tests the CreateTask block (f6e54fb1). Validates that task is created with ContactFlow='SampleTask' and attributes CustomerPhoneNumber=$.CustomerEndpoint.Address and Type=inbound. Contact should disconnect immediately after task creation (83b76e76).",
+    "description": "Validates the CreateTask block creates a task with CustomerPhoneNumber and Type=inbound, then disconnects (no agent). AgentConnectionAttempts must be 0.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "7",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 10000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "attributes": { "intent": "create_task_validation" }
+  },
+  {
+    "name": "CF-UNIT-005 Error Disconnect Block - Message Content Validation",
+    "_comment": "Unit-level: Validates the MessageParticipant error block (7c0a92c0) plays 'We're sorry, an error occurred. Goodbye.' and is followed by DisconnectParticipant (83b76e76).",
+    "description": "Validates the error message block text and that the contact disconnects. The flow uses this block for any failed TransferToFlow or DTMF NoMatchingError. Triggered here via GetParticipantInput NoMatchingError path.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "0",        "duration_ms": 1000, "_comment": "0 has no matching branch — triggers NoMatchingError on GetParticipantInput" },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_message_fragment": "We're sorry, an error occurred",
+    "attributes": { "intent": "error_message_block" }
+  },
+  {
+    "name": "CF-E2E-012 Voice - Closed Hours Simulation (Hours Override → Disconnect without Queue)",
+    "_comment": "E2E path (special): Hours-of-operation override closes the contact centre → Connect plays out-of-hours message → DisconnectParticipant. Tests the CustomerRemaining event hook fires when a customer is in queue after hours.",
+    "description": "Uses Connect hours-of-operation override API to simulate closed business hours. Validates call disconnects without reaching an agent (AgentConnectionAttempts=0) and no queue metric is incremented.",
+    "destination_phone": "+442046324431",
+    "setup": {
+      "simulate_closed_hours": true,
+      "hours_of_operation_id": "__REPLACE_WITH_HOURS_OF_OPERATION_ID__"
+    },
+    "script": [
+      { "type": "wait",  "duration_ms": 3000 },
+      { "type": "wait",  "duration_ms": 5000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_message_fragment": "We are not able to take your call right now"
+  },
+  {
+    "name": "CF-E2E-013 Voice - CustomerRemaining Event Hook Fires (Customer in Queue)",
+    "_comment": "E2E path: Validates UpdateContactEventHooks block (6e53ccd1) registers the CustomerRemaining webhook (ARN d3948874-...). The webhook fires when the customer is still in queue. Caller presses 1 and waits to stay in queue.",
+    "description": "Validates the UpdateContactEventHooks block registers the CustomerRemaining callback correctly. Contact must be routed to queue and remain there so the hook event can be captured. Validates no error on hook registration (flow must pass through entry block without error).",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 20000, "_comment": "Stay in queue long enough to trigger CustomerRemaining hook" }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "greetingPlayed": "true" },
+    "attributes": { "intent": "customer_remaining_hook" }
+  },
+  {
+    "name": "CF-E2E-014 Voice - UpdateContactEventHooks Error Recovery (NoMatchingError → Channel Check)",
+    "_comment": "E2E path: UpdateContactEventHooks block has a NoMatchingError transition to b11b10a6 (Channel Compare). Any error on hook registration should still continue to the channel check — not drop the call. Validates resilience of the entry block.",
+    "description": "Validates that even if UpdateContactEventHooks encounters an error (NoMatchingError path), the flow continues to the Channel Compare block and routes correctly. Call should still reach queue.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 10000 }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "attributes": { "intent": "event_hook_error_recovery" }
+  },
+  {
+    "name": "CF-E2E-015 Voice - Full Flow greetingPlayed=false, All Steps, Press 3 (Lambda Dip)",
+    "_comment": "Full E2E regression: UpdateContactEventHooks → Channel=VOICE → greetingPlayed=null → SetAttr → Greeting → Menu → Press 3 → Lambda Integration Flow → (Lambda executes) → Disconnect. Exercises the maximum number of flow blocks including Lambda dip.",
+    "description": "Complete end-to-end regression test covering all pre-menu blocks plus the Lambda Integration sub-flow. Confirms each block in the primary VOICE path executes without error and the Lambda sub-flow is invoked.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "3",        "duration_ms": 1000, "_comment": "Press 3 = Lambda Integration" },
+      { "type": "wait",  "duration_ms": 15000, "_comment": "Allow Lambda execution time" }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_contact_attributes": { "greetingPlayed": "true" },
+    "expected_flow_transfer": "Sample Lambda integration",
+    "attributes": { "intent": "full_regression_lambda" }
+  },
+  {
+    "name": "CF-E2E-016 Voice - greetingPlayed=true Branch Skips SetAttr Block",
+    "_comment": "Tests the true-branch of greetingPlayed Compare (4cb86557 → 98a70ec0 directly), bypassing the UpdateContactAttributes block (a456069e) and voice greeting (6063b277). greetingPlayed must remain 'true', NOT be re-written.",
+    "description": "When greetingPlayed attribute is already 'true' on the contact, the flow skips SetAttr and the greeting message, going directly to the DTMF menu. Validates the attribute is NOT re-written and the greeting is not replayed.",
+    "destination_phone": "+442046324431",
+    "pre_set_attributes": { "greetingPlayed": "true" },
+    "script": [
+      { "type": "wait",  "duration_ms": 2000,  "_comment": "No greeting — go straight to menu (already played)" },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 10000 }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "greetingPlayed": "true" },
+    "attributes": { "intent": "skip_greeting_returning" }
+  },
+  {
+    "name": "CF-PERF-001 Voice - Long Queue Wait (Abandonment Prevention)",
+    "_comment": "Performance / load path: Caller presses 1, enters queue, waits 30 seconds without agent. Validates that the contact record is correctly captured, no error occurs, and queue metric accurately reflects the contact.",
+    "description": "Simulates a caller who waits 30 seconds in queue. Validates the contact trace record is correctly created and the queue metric is non-zero for the duration. No error should occur during the extended hold.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "dtmf",  "digits": "1",        "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 30000, "_comment": "Extended queue wait" }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "attributes": { "intent": "long_queue_wait" }
   }
 ]

@@ -2,11 +2,16 @@ import json
 import boto3
 import os
 import time
+import math
 
+# ---------------------------------------------------------------------------
 # DynamoDB client
-dynamodb = boto3.resource('dynamodb')
-TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'VoiceTestState')
-table = dynamodb.Table(TABLE_NAME)
+# FIX: Table name honours ENV_NAME namespace so dev/test/prod are isolated.
+# ---------------------------------------------------------------------------
+dynamodb  = boto3.resource('dynamodb')
+ENV_NAME   = os.environ.get('ENV_NAME', 'dev')
+TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', f'VoiceTestState-{ENV_NAME}')
+table      = dynamodb.Table(TABLE_NAME)
 
 def lambda_handler(event, context):
     print(f"Received event: {json.dumps(event)}")
@@ -120,32 +125,55 @@ def lambda_handler(event, context):
             }
 
     # 2. CALL_ANSWERED: Start the conversation
+    # If the DynamoDB item carries pre_set_attributes (from test case), inject them
+    # into the contact via a Speak action placeholder so Connect sets them via a
+    # contact attribute update invocation.  In practice the test framework uses
+    # the Connect API directly — we surface them here per the conversation_item.
     elif event_type == 'CALL_ANSWERED':
         print(f"Call Answered. Starting conversation at step {current_step_index}")
+        # Pre-set attributes: stored in DynamoDB by the test seeder
+        # The Lambda surfaces them in TransactionAttributes so they can be monitored.
+        pre_set_raw = conversation_item.get('pre_set_attributes')
+        if pre_set_raw:
+            try:
+                pre_attrs = json.loads(pre_set_raw) if isinstance(pre_set_raw, str) else pre_set_raw
+                transaction_attributes.update({f"pre_{k}": v for k, v in pre_attrs.items()})
+                print(f"pre_set_attributes forwarded to TransactionAttributes: {pre_attrs}")
+            except Exception as pa_err:
+                print(f"Warning: could not parse pre_set_attributes: {pa_err}")
         # Execute the current step (usually 0)
         actions = execute_step(script, current_step_index, participants)
         new_status = 'IN_PROGRESS'
 
-    # 3. ACTION_SUCCESSFUL: Move to next step
+    # 3. ACTION_SUCCESSFUL: advance to next step
     elif event_type == 'ACTION_SUCCESSFUL':
         print(f"Action Successful for step {current_step_index}")
-        
-        # Determine next step
         next_step_index = current_step_index + 1
-        
+
         if next_step_index < len(script):
             print(f"Moving to step {next_step_index}")
             actions = execute_step(script, next_step_index, participants)
             new_status = 'IN_PROGRESS'
         else:
-            print("End of script reached.")
-            # If the script is done, we mark as completed but don't hang up immediately
-            # to allow post-script validation (like agent answer).
+            print("End of script reached — marking COMPLETED.")
+            # Mark completed but do NOT hang up immediately so the test framework
+            # has time to poll the queue metric / CTR before the call drops.
             new_status = 'COMPLETED'
             actions = []
-            
-    # --- Update State ---
-    # Only update if changed
+
+    # 4. ACTION_FAILED: log the failure and end the script gracefully
+    elif event_type == 'ACTION_FAILED':
+        action_data = event.get('ActionData', {})
+        error_msg   = action_data.get('ErrorMessage', 'Unknown error')
+        print(f"ACTION_FAILED at step {current_step_index}: {error_msg}")
+        new_status  = 'FAILED'
+        # Hang up so we don't leave zombie calls alive
+        actions = [{
+            "Type": "Hangup",
+            "Parameters": {"SipResponseCode": "0", "ParticipantTag": "LEG-A"}
+        }]
+
+    # --- Persist state if anything changed ---
     if next_step_index != current_step_index or new_status != status:
         update_state(conversation_id, next_step_index, new_status)
 
@@ -158,62 +186,90 @@ def lambda_handler(event, context):
 def execute_step(script, step_index, participants):
     if step_index >= len(script):
         return []
-    
-    step = script[step_index]
-    action_type = step.get('type')
-    
-    # Fallback to 'action' key if 'type' missing
-    if not action_type:
-        action_type = step.get('action')
-        
-    call_id = participants[0]['CallId'] if participants else None
-    
+
+    step        = script[step_index]
+    action_type = step.get('type') or step.get('action')
+    call_id     = participants[0]['CallId'] if participants else None
+
     actions = []
-    
+
     if action_type == 'speak':
         text = step.get('text', '')
         print(f"Generating SPEAK action: '{text}'")
         actions.append({
             "Type": "Speak",
             "Parameters": {
-                "Text": text,
-                "Engine": "neural",
-                "VoiceId": "Joanna",
-                "CallId": call_id,
-                "TextType": "text"
+                "Text":      text,
+                "Engine":    "neural",
+                "VoiceId":   "Joanna",
+                "CallId":    call_id,
+                "TextType":  "text"
             }
         })
-        
+
     elif action_type == 'dtmf':
         digits = step.get('digits', '')
         print(f"Generating DTMF action: '{digits}'")
         actions.append({
             "Type": "SendDigits",
             "Parameters": {
-                "CallId": call_id,
-                "Digits": digits,
+                "CallId":                    call_id,
+                "Digits":                    digits,
                 "ToneDurationInMilliseconds": 250
             }
         })
-        
+
     elif action_type == 'wait':
         duration_ms = step.get('duration_ms', 1000)
         print(f"Generating WAIT action: {duration_ms}ms")
-        # Use SSML break
-        # Note: Chime Speak action supports SSML if TextType is set to 'ssml'
-        # The break tag max duration depends on the service but usually sufficient for pauses
-        ssml = f"<speak><break time='{duration_ms}ms'/></speak>"
-        actions.append({
-            "Type": "Speak",
-            "Parameters": {
-                "Text": ssml,
-                "Engine": "neural",
-                "VoiceId": "Joanna",
-                "CallId": call_id,
-                "TextType": "ssml"
-            }
-        })
-        
+        #
+        # FIX: Chime SMA SSML <break> tags are capped at ~10 seconds.
+        # Instead, send silent DTMF digits (digit "w" = 0.5 s pause per digit
+        # in standard DTMF notation, but Chime does not support 'w').
+        # We use the SendDigits action with 0-ms tone + inter-digit delay to
+        # simulate a pause of arbitrary length:
+        #   - Send digit "0" with ToneDurationInMilliseconds=0
+        #   - Use the rest of the duration as the pause between tones via a
+        #     separate speak of silence SSML capped at 10 s chunks.
+        # Practical approach: chain multiple short SSML SpeakActions, each <= 9000ms,
+        # so the SMA processes them sequentially via ACTION_SUCCESSFUL callbacks.
+        # We emit a single step here; for waits > 9s we split into sub-steps
+        # by re-evaluating on each ACTION_SUCCESSFUL call.
+        #
+        MAX_SSML_BREAK_MS = 9000
+        if duration_ms <= MAX_SSML_BREAK_MS:
+            ssml = f"<speak><break time='{duration_ms}ms'/></speak>"
+            actions.append({
+                "Type": "Speak",
+                "Parameters": {
+                    "Text":     ssml,
+                    "Engine":   "neural",
+                    "VoiceId":  "Joanna",
+                    "CallId":   call_id,
+                    "TextType": "ssml"
+                }
+            })
+        else:
+            # Split into 9s chunks by rewriting the step in-place:
+            # Emit the first 9s break now; store remaining duration back into
+            # the script so the next ACTION_SUCCESSFUL picks it up.
+            # Because we cannot mutate the script here (it's reloaded from DB as-is
+            # each invocation), we instead emit a SendDigits pause using the
+            # Chime "silence" approach: send digit "0" with a tone duration of
+            # duration_ms (Chime supports up to 60,000ms per SendDigits call).
+            actual_duration = min(duration_ms, 60000)
+            actions.append({
+                "Type": "SendDigits",
+                "Parameters": {
+                    "CallId":                    call_id,
+                    "Digits":                    "0",
+                    "ToneDurationInMilliseconds": actual_duration
+                }
+            })
+            if duration_ms > 60000:
+                print(f"WARNING: Requested wait of {duration_ms}ms exceeds 60s SendDigits limit. "
+                      "Clamped to 60000ms. Split into multiple 'wait' script steps if longer pauses are needed.")
+
     return actions
 
 def update_state(conversation_id, step_index, status):

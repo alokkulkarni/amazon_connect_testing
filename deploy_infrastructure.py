@@ -6,33 +6,71 @@ import zipfile
 import sys
 from botocore.exceptions import ClientError
 
+# ---------------------------------------------------------------------------
 # Configuration
-DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'VoiceTestState')
-# Use CHIME_AWS_REGION for Chime/Lambda/DynamoDB resources, default to us-east-1
-AWS_REGION = os.environ.get('CHIME_AWS_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
-LAMBDA_FUNCTION_NAME = 'ChimeSMAHandler'
-SMA_NAME = 'ChimeAutomationSMA'
-IAM_ROLE_NAME = 'ChimeTestLambdaRole'
+# FIX: ENV_NAME namespaces all resource names so dev/test/prod are isolated.
+# ---------------------------------------------------------------------------
+ENV_NAME             = os.environ.get('ENV_NAME', 'dev')
+DYNAMODB_TABLE_NAME  = os.environ.get('DYNAMODB_TABLE_NAME', f'VoiceTestState-{ENV_NAME}')
+# CHIME_AWS_REGION: region where Chime SMA, Lambda, and DynamoDB live (us-east-1)
+AWS_REGION           = os.environ.get('CHIME_AWS_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+# CONNECT_REGION: region where Amazon Connect instance lives (e.g. eu-west-2)
+# CloudWatch Logs for Connect flow execution logs are written to this region.
+CONNECT_REGION       = os.environ.get('CONNECT_REGION', 'eu-west-2')
+# CONNECT_INSTANCE_ALIAS: used to build the CloudWatch log group name
+# /aws/connect/<alias>  (enable via Admin > Data storage > Contact flow logs)
+CONNECT_INSTANCE_ALIAS = os.environ.get('CONNECT_INSTANCE_ALIAS', '')
+# CHIME_RECORDING_BUCKET: S3 bucket where Chime SMA stores call recordings
+# Required for the Amazon Transcribe fallback assertion track.
+CHIME_RECORDING_BUCKET = os.environ.get('CHIME_RECORDING_BUCKET', '')
+LAMBDA_FUNCTION_NAME = f'ChimeSMAHandler-{ENV_NAME}'
+SMA_NAME             = f'ChimeAutomationSMA-{ENV_NAME}'
+IAM_ROLE_NAME        = f'ChimeTestLambdaRole-{ENV_NAME}'
 
-def create_dynamodb_table(dynamodb):
+def create_dynamodb_table(dynamodb_client, account_id: str):
+    """
+    Create DynamoDB table with:
+      - PAY_PER_REQUEST billing (no provisioned capacity sitting idle)
+      - TTL attribute enabled on 'ttl' field
+    FIX: Replaces ProvisionedThroughput with on-demand billing and adds TTL.
+    """
+    table_arn = f"arn:aws:dynamodb:{AWS_REGION}:{account_id}:table/{DYNAMODB_TABLE_NAME}"
     try:
         print(f"Checking DynamoDB table {DYNAMODB_TABLE_NAME}...")
-        dynamodb.create_table(
+        dynamodb_client.create_table(
             TableName=DYNAMODB_TABLE_NAME,
             KeySchema=[{'AttributeName': 'conversation_id', 'KeyType': 'HASH'}],
             AttributeDefinitions=[{'AttributeName': 'conversation_id', 'AttributeType': 'S'}],
-            ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+            BillingMode='PAY_PER_REQUEST',
         )
         print(f"Creating DynamoDB table {DYNAMODB_TABLE_NAME}...")
-        waiter = dynamodb.get_waiter('table_exists')
+        waiter = dynamodb_client.get_waiter('table_exists')
         waiter.wait(TableName=DYNAMODB_TABLE_NAME)
         print(f"Table {DYNAMODB_TABLE_NAME} created successfully.")
-    except dynamodb.exceptions.ResourceInUseException:
+    except dynamodb_client.exceptions.ResourceInUseException:
         print(f"Table {DYNAMODB_TABLE_NAME} already exists.")
     except Exception as e:
         print(f"Error creating DynamoDB table: {e}")
+        return None
 
-def get_or_create_iam_role(iam):
+    # Enable TTL so test items auto-expire after their 'ttl' Unix timestamp
+    try:
+        dynamodb_client.update_time_to_live(
+            TableName=DYNAMODB_TABLE_NAME,
+            TimeToLiveSpecification={'Enabled': True, 'AttributeName': 'ttl'}
+        )
+        print(f"TTL enabled on '{DYNAMODB_TABLE_NAME}' (attribute: ttl).")
+    except Exception as e:
+        print(f"Warning: Could not enable TTL: {e}")
+
+    return table_arn
+
+def get_or_create_iam_role(iam, account_id: str, table_arn: str):
+    """
+    Create the Lambda execution role with a least-privilege inline policy.
+    FIX: Replaces AmazonDynamoDBFullAccess (account-wide) with a resource-scoped
+         inline policy that only allows the specific test table.
+    """
     print(f"Checking IAM Role {IAM_ROLE_NAME}...")
     try:
         role = iam.get_role(RoleName=IAM_ROLE_NAME)
@@ -42,27 +80,148 @@ def get_or_create_iam_role(iam):
         assume_role_policy = {
             "Version": "2012-10-17",
             "Statement": [{
-                "Effect": "Allow",
+                "Effect":    "Allow",
                 "Principal": {"Service": "lambda.amazonaws.com"},
-                "Action": "sts:AssumeRole"
+                "Action":    "sts:AssumeRole"
             }]
         }
         role = iam.create_role(
             RoleName=IAM_ROLE_NAME,
             AssumeRolePolicyDocument=json.dumps(assume_role_policy)
         )
-        # Attach basic execution policy
+        # Basic CloudWatch Logs execution policy
         iam.attach_role_policy(
             RoleName=IAM_ROLE_NAME,
             PolicyArn='arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
         )
-        # Attach DynamoDB access (inline or managed - using full access for simplicity in demo)
-        iam.attach_role_policy(
-            RoleName=IAM_ROLE_NAME,
-            PolicyArn='arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess'
+        # ----------------------------------------------------------------
+        # Inline policy 1: DynamoDB — scoped to the test state table only
+        # FIX: Replaces AmazonDynamoDBFullAccess with least-privilege access.
+        # ----------------------------------------------------------------
+        _ddb_arn = table_arn if table_arn else (
+            f"arn:aws:dynamodb:{AWS_REGION}:{account_id}:table/{DYNAMODB_TABLE_NAME}"
         )
-        # Wait for propagation
-        time.sleep(10)
+        scoped_dynamodb_policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Sid":      "ChimeTestDynamoDB",
+                "Effect":   "Allow",
+                "Action":   [
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:DeleteItem",
+                    "dynamodb:DescribeTable"
+                ],
+                "Resource": _ddb_arn
+            }]
+        }
+        iam.put_role_policy(
+            RoleName=IAM_ROLE_NAME,
+            PolicyName='ChimeTestLambdaDynamoDBPolicy',
+            PolicyDocument=json.dumps(scoped_dynamodb_policy)
+        )
+        print("  Added inline policy: ChimeTestLambdaDynamoDBPolicy")
+
+        # ----------------------------------------------------------------
+        # Inline policy 2: CloudWatch Logs Insights
+        # Required for query_contact_flow_logs() — reads Connect contact
+        # flow execution logs from /aws/connect/<alias> in CONNECT_REGION.
+        # ----------------------------------------------------------------
+        _cwl_log_group_arn = (
+            f"arn:aws:logs:{CONNECT_REGION}:{account_id}:log-group:/aws/connect/*"
+        )
+        cwl_policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Sid":    "ChimeTestCWLInsights",
+                "Effect": "Allow",
+                "Action": [
+                    "logs:StartQuery",
+                    "logs:GetQueryResults",
+                    "logs:StopQuery",
+                    # describe permission lets code verify the log group exists
+                    "logs:DescribeLogGroups"
+                ],
+                "Resource": [
+                    _cwl_log_group_arn,
+                    # Insights also needs the log-group:* wildcard at account level
+                    # for the query engine itself
+                    f"arn:aws:logs:{CONNECT_REGION}:{account_id}:log-group:*"
+                ]
+            }]
+        }
+        iam.put_role_policy(
+            RoleName=IAM_ROLE_NAME,
+            PolicyName='ChimeTestLambdaCWLInsightsPolicy',
+            PolicyDocument=json.dumps(cwl_policy)
+        )
+        print("  Added inline policy: ChimeTestLambdaCWLInsightsPolicy")
+
+        # ----------------------------------------------------------------
+        # Inline policy 3: Amazon Transcribe
+        # Required for transcribe_chime_audio() — submits transcription
+        # jobs against Chime-recorded call audio.
+        # ----------------------------------------------------------------
+        transcribe_policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Sid":    "ChimeTestTranscribe",
+                "Effect": "Allow",
+                "Action": [
+                    "transcribe:StartTranscriptionJob",
+                    "transcribe:GetTranscriptionJob",
+                    "transcribe:DeleteTranscriptionJob"
+                ],
+                # Transcribe IAM resources are always '*'; jobs are identified
+                # by name in API calls, not by ARN in policy conditions.
+                "Resource": "*"
+            }]
+        }
+        iam.put_role_policy(
+            RoleName=IAM_ROLE_NAME,
+            PolicyName='ChimeTestLambdaTranscribePolicy',
+            PolicyDocument=json.dumps(transcribe_policy)
+        )
+        print("  Added inline policy: ChimeTestLambdaTranscribePolicy")
+
+        # ----------------------------------------------------------------
+        # Inline policy 4: S3 — Chime recording bucket
+        # Transcribe reads the .wav from S3; Transcribe also writes its
+        # JSON result back to S3 (default output bucket = same bucket).
+        # Only added when CHIME_RECORDING_BUCKET is configured.
+        # ----------------------------------------------------------------
+        if CHIME_RECORDING_BUCKET:
+            s3_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid":    "ChimeTestS3RecordingRead",
+                        "Effect": "Allow",
+                        "Action": ["s3:GetObject", "s3:ListBucket"],
+                        "Resource": [
+                            f"arn:aws:s3:::{CHIME_RECORDING_BUCKET}",
+                            f"arn:aws:s3:::{CHIME_RECORDING_BUCKET}/*"
+                        ]
+                    },
+                    {
+                        "Sid":    "ChimeTestS3TranscribeWrite",
+                        "Effect": "Allow",
+                        "Action": ["s3:PutObject"],
+                        "Resource": f"arn:aws:s3:::{CHIME_RECORDING_BUCKET}/*"
+                    }
+                ]
+            }
+            iam.put_role_policy(
+                RoleName=IAM_ROLE_NAME,
+                PolicyName='ChimeTestLambdaS3RecordingPolicy',
+                PolicyDocument=json.dumps(s3_policy)
+            )
+            print(f"  Added inline policy: ChimeTestLambdaS3RecordingPolicy (bucket: {CHIME_RECORDING_BUCKET})")
+        else:
+            print("  Skipped S3 recording policy: CHIME_RECORDING_BUCKET not set.")
+
+        time.sleep(10)   # Allow IAM propagation
         return role['Role']['Arn']
 
 def create_lambda_package():
@@ -78,7 +237,12 @@ def create_lambda_package():
 def get_or_create_lambda(lambda_client, iam_role_arn):
     print(f"Checking Lambda Function {LAMBDA_FUNCTION_NAME}...")
     zip_content = create_lambda_package()
-    
+
+    env_vars = {
+        'DYNAMODB_TABLE_NAME': DYNAMODB_TABLE_NAME,
+        'ENV_NAME':            ENV_NAME,
+    }
+
     try:
         lambda_client.get_function(FunctionName=LAMBDA_FUNCTION_NAME)
         print(f"Updating Lambda Code for {LAMBDA_FUNCTION_NAME}...")
@@ -89,51 +253,47 @@ def get_or_create_lambda(lambda_client, iam_role_arn):
         print("Waiting for Lambda update...")
         waiter = lambda_client.get_waiter('function_updated')
         waiter.wait(FunctionName=LAMBDA_FUNCTION_NAME)
-        
-        # Update config
         lambda_client.update_function_configuration(
-             FunctionName=LAMBDA_FUNCTION_NAME,
-             Environment={'Variables': {'DYNAMODB_TABLE_NAME': DYNAMODB_TABLE_NAME}}
+            FunctionName=LAMBDA_FUNCTION_NAME,
+            Environment={'Variables': env_vars}
         )
-        
     except lambda_client.exceptions.ResourceNotFoundException:
         print(f"Creating Lambda Function {LAMBDA_FUNCTION_NAME}...")
         lambda_client.create_function(
             FunctionName=LAMBDA_FUNCTION_NAME,
-            Runtime='python3.9',
+            Runtime='python3.12',
             Role=iam_role_arn,
             Handler='lambda_function.lambda_handler',
             Code={'ZipFile': zip_content},
-            Environment={'Variables': {'DYNAMODB_TABLE_NAME': DYNAMODB_TABLE_NAME}},
-            Timeout=15
+            Environment={'Variables': env_vars},
+            Timeout=30
         )
-        # Wait for active
         waiter = lambda_client.get_waiter('function_active')
         waiter.wait(FunctionName=LAMBDA_FUNCTION_NAME)
 
-    # Add permission for Chime to invoke Lambda (Voice Connector)
-    try:
-        lambda_client.add_permission(
-            FunctionName=LAMBDA_FUNCTION_NAME,
-            StatementId='ChimeVoiceConnectorInvokePermission',
-            Action='lambda:InvokeFunction',
-            Principal='voiceconnector.chime.amazonaws.com'
-        )
-    except lambda_client.exceptions.ResourceConflictException:
-        pass # Already exists
+    # FIX: Correct principals for Chime SDK Voice SMA invocations.
+    # The SMA uses 'voiceconnector.chime.amazonaws.com' as the invoking principal.
+    # We add both to cover legacy and SDK-native invocations.
+    for stmt_id, principal in [
+        ('ChimeVoiceConnectorInvokePermission', 'voiceconnector.chime.amazonaws.com'),
+        ('ChimeSMAInvokePermission',            'chime.amazonaws.com'),
+    ]:
+        try:
+            lambda_client.add_permission(
+                FunctionName=LAMBDA_FUNCTION_NAME,
+                StatementId=stmt_id,
+                Action='lambda:InvokeFunction',
+                Principal=principal
+            )
+            print(f"Added Lambda permission for principal: {principal}")
+        except lambda_client.exceptions.ResourceConflictException:
+            pass   # Already exists
 
-    # Add permission for Chime to invoke Lambda (SIP Media Application)
-    try:
-        lambda_client.add_permission(
-            FunctionName=LAMBDA_FUNCTION_NAME,
-            StatementId='ChimeSMAInvokePermission',
-            Action='lambda:InvokeFunction',
-            Principal='chime.amazonaws.com'
-        )
-    except lambda_client.exceptions.ResourceConflictException:
-        pass # Already exists
-
-    return lambda_client.get_function(FunctionName=LAMBDA_FUNCTION_NAME)['Configuration']['FunctionArn']
+    fn_arn = lambda_client.get_function(
+        FunctionName=LAMBDA_FUNCTION_NAME
+    )['Configuration']['FunctionArn']
+    print(f"Lambda ARN: {fn_arn}")
+    return fn_arn
 
 def get_or_create_sma(chime, lambda_arn):
     print(f"Checking SIP Media Application {SMA_NAME}...")
@@ -238,34 +398,43 @@ def create_sip_rule(chime, sma_id, phone_number):
         print(f"Error managing SIP Rule: {e}")
 
 def deploy():
-    session = boto3.Session(region_name=AWS_REGION)
-    dynamodb = session.client('dynamodb')
-    iam = session.client('iam')
+    session       = boto3.Session(region_name=AWS_REGION)
+    dynamodb      = session.client('dynamodb')
+    iam           = session.client('iam')
     lambda_client = session.client('lambda')
-    chime = session.client('chime-sdk-voice') # specific client for voice
+    chime         = session.client('chime-sdk-voice')
+    sts           = session.client('sts')
 
-    create_dynamodb_table(dynamodb)
-    role_arn = get_or_create_iam_role(iam)
+    account_id = sts.get_caller_identity()['Account']
+    print(f"Deploying into account {account_id}, region {AWS_REGION}, env {ENV_NAME}")
+
+    # Order: table first so its ARN is available for the IAM policy
+    table_arn  = create_dynamodb_table(dynamodb, account_id)
+    role_arn   = get_or_create_iam_role(iam, account_id, table_arn)
     lambda_arn = get_or_create_lambda(lambda_client, role_arn)
-    sma_id = get_or_create_sma(chime, lambda_arn)
-    phone = provision_phone_number(chime, sma_id)
-    
+    sma_id     = get_or_create_sma(chime, lambda_arn)
+    phone      = provision_phone_number(chime, sma_id)
+
     if phone:
         create_sip_rule(chime, sma_id, phone)
 
-    # Output for consumption by other scripts
     output = {
-        'CHIME_SMA_ID': sma_id,
-        'CHIME_PHONE_NUMBER': phone,
-        'LAMBDA_ARN': lambda_arn,
-        'DYNAMODB_TABLE': DYNAMODB_TABLE_NAME
+        'CHIME_SMA_ID':            sma_id,
+        'CHIME_PHONE_NUMBER':      phone,
+        'LAMBDA_ARN':              lambda_arn,
+        'DYNAMODB_TABLE':          DYNAMODB_TABLE_NAME,
+        'ENV_NAME':                ENV_NAME,
+        'CONNECT_REGION':          CONNECT_REGION,
+        'CONNECT_INSTANCE_ALIAS':  CONNECT_INSTANCE_ALIAS,
+        'CHIME_RECORDING_BUCKET':  CHIME_RECORDING_BUCKET,
+        'CONNECT_FLOW_LOG_GROUP':  (
+            f'/aws/connect/{CONNECT_INSTANCE_ALIAS}' if CONNECT_INSTANCE_ALIAS else ''
+        ),
     }
-    
-    # Write to a file or stdout
     with open('infrastructure_output.json', 'w') as f:
-        json.dump(output, f)
-        
-    print(json.dumps(output))
+        json.dump(output, f, indent=2)
+    print(json.dumps(output, indent=2))
+
 
 if __name__ == "__main__":
     deploy()
