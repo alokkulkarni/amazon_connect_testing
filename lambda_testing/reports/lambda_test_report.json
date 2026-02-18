@@ -1,0 +1,68 @@
+{
+  "generated_at": "2026-02-18T17:54:15.565555+00:00",
+  "summary": {
+    "total": 8,
+    "passed": 0,
+    "failed": 8,
+    "skipped": 0,
+    "errored": 0
+  },
+  "test_cases": [
+    {
+      "name": "test_lambda_function[TC-001 S3 event \\u2192 DynamoDB writer (happy path)]",
+      "outcome": "FAILED",
+      "duration_s": 2.934,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function s3-processor entered Failed state",
+      "timestamp": "2026-02-18T17:54:11.441390+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-002 Simple greeting function (happy path)]",
+      "outcome": "FAILED",
+      "duration_s": 0.542,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function greeter entered Failed state",
+      "timestamp": "2026-02-18T17:54:11.992035+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-003 Lambda writes output to S3]",
+      "outcome": "FAILED",
+      "duration_s": 0.554,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function s3-writer entered Failed state",
+      "timestamp": "2026-02-18T17:54:12.556086+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-004 Environment variable passthrough]",
+      "outcome": "FAILED",
+      "duration_s": 0.545,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function env-echo entered Failed state",
+      "timestamp": "2026-02-18T17:54:13.107238+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-005 Invalid S3 event structure (error path \\u2013 400)]",
+      "outcome": "FAILED",
+      "duration_s": 0.544,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function s3-processor-badrequest entered Failed state",
+      "timestamp": "2026-02-18T17:54:13.660958+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-006 Missing required env var TABLE_NAME (error path \\u2013 500)]",
+      "outcome": "FAILED",
+      "duration_s": 0.543,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function s3-processor-noenv entered Failed state",
+      "timestamp": "2026-02-18T17:54:14.210130+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-007 Unhandled exception triggers FunctionError]",
+      "outcome": "FAILED",
+      "duration_s": 0.548,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function raiser entered Failed state",
+      "timestamp": "2026-02-18T17:54:14.778316+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-008 DynamoDB conditional write \\u2013 new item created (201)]",
+      "outcome": "FAILED",
+      "duration_s": 0.563,
+      "error": "test_lambda_localstack.py:200: in test_lambda_function\n    _wait_for_function_active(aws_clients[\"lambda\"], function_name)\ntest_lambda_localstack.py:80: in _wait_for_function_active\n    raise RuntimeError(f\"Function {function_name} entered Failed state\")\nE   RuntimeError: Function conditional-writer entered Failed state",
+      "timestamp": "2026-02-18T17:54:15.352014+00:00"
+    }
+  ]
+}
