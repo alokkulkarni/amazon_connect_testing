@@ -38,15 +38,30 @@ ENV_NAME            = os.environ.get('ENV_NAME', 'dev')
 DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', f'VoiceTestState-{ENV_NAME}')
 
 # Connect is in one region (e.g. eu-west-2), Chime/Lambda in another (e.g. us-east-1)
-CONNECT_REGION = os.environ.get('AWS_REGION', 'us-east-1')
-CHIME_REGION   = os.environ.get('CHIME_AWS_REGION', 'us-east-1')
-MOCK_AWS       = os.environ.get('MOCK_AWS', 'false').lower() == 'true'
+CONNECT_REGION          = os.environ.get('AWS_REGION', 'us-east-1')
+CHIME_REGION            = os.environ.get('CHIME_AWS_REGION', 'us-east-1')
+MOCK_AWS                = os.environ.get('MOCK_AWS', 'false').lower() == 'true'
+
+# Connect contact-flow execution log group: /aws/connect/<instance-alias>
+# Enable via: Admin console > Data storage > Contact flow logs
+CONNECT_INSTANCE_ALIAS  = os.environ.get('CONNECT_INSTANCE_ALIAS', '')
+CONNECT_FLOW_LOG_GROUP  = os.environ.get(
+    'CONNECT_FLOW_LOG_GROUP',
+    f'/aws/connect/{CONNECT_INSTANCE_ALIAS}' if CONNECT_INSTANCE_ALIAS else ''
+)
+
+# S3 bucket for Chime SMA audio recordings (used for Transcribe fallback)
+# Set via: Admin console > Recording > or deploy script output
+CHIME_RECORDING_BUCKET  = os.environ.get('CHIME_RECORDING_BUCKET', '')
 
 # Poll timeouts
-QUEUE_POLL_TIMEOUT_S  = 60
-QUEUE_POLL_INTERVAL_S = 5
-CTR_POLL_TIMEOUT_S    = 300   # Connect CTR indexing can take 1-3 min
-CTR_POLL_INTERVAL_S   = 10
+QUEUE_POLL_TIMEOUT_S    = 60
+QUEUE_POLL_INTERVAL_S   = 5
+CTR_POLL_TIMEOUT_S      = 300   # Connect CTR indexing can take 1-3 min
+CTR_POLL_INTERVAL_S     = 10
+CWL_POLL_TIMEOUT_S      = 120   # CloudWatch Logs Insights query timeout
+CWL_POLL_INTERVAL_S     = 5
+TRANSCRIBE_POLL_TIMEOUT_S = 300  # Transcribe job completion timeout
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_infrastructure():
@@ -97,8 +112,16 @@ def load_test_cases():
 
 
 def get_clients():
+    """
+    Returns a 5-tuple:
+      (connect_client, chime_client, dynamodb_resource, transcribe_client, logs_client)
+
+    logs_client targets the CONNECT_REGION because Connect flow execution
+    logs are written to CloudWatch in the same region as the Connect instance.
+    transcribe_client targets CHIME_REGION for audio files in the Chime bucket.
+    """
     if MOCK_AWS:
-        return None, None, None, None
+        return None, None, None, None, None
 
     # Session for Connect (e.g. eu-west-2)
     session_connect = boto3.Session(region_name=CONNECT_REGION)
@@ -110,6 +133,7 @@ def get_clients():
         session_chime.client('chime-sdk-voice'),
         session_chime.resource('dynamodb'),
         session_chime.client('transcribe'),
+        session_connect.client('logs'),   # CloudWatch Logs in Connect region
     )
 
 
@@ -384,6 +408,187 @@ def delete_hours_override(connect_client, hours_of_operation_id: str, override_i
     except Exception as e:
         print(f"   [HOURS] Failed to delete override: {e}")
 
+
+# ---------------------------------------------------------------------------
+# Helper: query Connect contact flow execution logs via CloudWatch Logs Insights
+#
+# PREREQUISITE: Contact flow logging MUST be enabled in Connect admin console:
+#   Admin console > Data storage > Contact flow logs > Enable
+# This writes every block execution to /aws/connect/<instance-alias> in
+# the Connect region.
+#
+# Solves TWO weak assertions:
+#   1. expected_flow_transfer  — query for Type=TransferToFlow + ContactFlowName
+#   2. expected_message_fragment — query for Type=MessageParticipant + Text content
+# ---------------------------------------------------------------------------
+def query_contact_flow_logs(
+    logs_client,
+    contact_id: str,
+    since_epoch: int,
+    block_type: str,
+    value_field: str,
+    expected_value: str,
+) -> tuple:
+    """
+    Run a CloudWatch Logs Insights query against the Connect contact flow log
+    group and search for a specific block execution.
+
+    Args:
+        logs_client:     boto3 logs client (in Connect region)
+        contact_id:      Connect ContactId from the CTR
+        since_epoch:     Unix timestamp of call start (search window start)
+        block_type:      Connect flow block Type to filter on, e.g.
+                           'TransferToFlow' or 'MessageParticipant'
+        value_field:     Log field to extract, e.g.
+                           'Parameters.ContactFlowName' or 'Parameters.Text'
+        expected_value:  Substring to match inside value_field
+
+    Returns:
+        (found: bool, actual_value: str | None)
+    """
+    if not CONNECT_FLOW_LOG_GROUP:
+        print("   [CWL] CONNECT_FLOW_LOG_GROUP not configured — skipping log query.")
+        return False, None
+
+    query_string = (
+        f'fields @timestamp, ContactId, Type, {value_field}'
+        f' | filter ContactId = "{contact_id}"'
+        f' | filter Type = "{block_type}"'
+        f' | sort @timestamp asc'
+        f' | limit 20'
+    )
+    end_epoch = int(time.time()) + 60
+
+    try:
+        resp = logs_client.start_query(
+            logGroupName=CONNECT_FLOW_LOG_GROUP,
+            startTime=since_epoch - 30,
+            endTime=end_epoch,
+            queryString=query_string,
+        )
+        query_id = resp['queryId']
+        print(f"   [CWL] Started Insights query {query_id} for ContactId={contact_id} block={block_type}")
+    except Exception as e:
+        print(f"   [CWL] Failed to start Insights query: {e}")
+        return False, None
+
+    # Poll for results
+    deadline = time.time() + CWL_POLL_TIMEOUT_S
+    while time.time() < deadline:
+        time.sleep(CWL_POLL_INTERVAL_S)
+        try:
+            result = logs_client.get_query_results(queryId=query_id)
+            status = result['status']
+            if status in ('Complete', 'Failed', 'Cancelled', 'Timeout'):
+                if status != 'Complete':
+                    print(f"   [CWL] Query ended with status={status}")
+                    return False, None
+
+                rows = result.get('results', [])
+                print(f"   [CWL] Query returned {len(rows)} row(s) for block={block_type}")
+                for row in rows:
+                    fields = {f['field']: f['value'] for f in row}
+                    actual = fields.get(value_field, '')
+                    print(f"   [CWL]   {value_field}={actual!r}")
+                    if expected_value.lower() in actual.lower():
+                        return True, actual
+                # No matching row found
+                return False, rows[0][0]['value'] if rows else None
+        except Exception as e:
+            print(f"   [CWL] Poll error: {e}")
+            return False, None
+
+    logs_client.stop_query(queryId=query_id)
+    print("   [CWL] Query timed out.")
+    return False, None
+
+
+# ---------------------------------------------------------------------------
+# Helper: transcribe Chime-captured audio from S3 via Amazon Transcribe
+#
+# PREREQUISITE: Chime SMA must be configured to record the call audio to S3.
+# In the SMA Lambda, add a RecordAudio action before Hangup and set
+# RecordingDestination to the CHIME_RECORDING_BUCKET.  The S3 key format
+# is typically: <transaction_id>/<transaction_id>.wav
+#
+# This solves expected_message_fragment when CloudWatch flow logs are not
+# available (e.g. logging not enabled) or for additional speech verification.
+# ---------------------------------------------------------------------------
+def transcribe_chime_audio(
+    transcribe_client,
+    transaction_id: str,
+    expected_fragment: str,
+) -> tuple:
+    """
+    Start an Amazon Transcribe job for the Chime-recorded call audio and poll
+    until the transcript is available, then check for expected_fragment.
+
+    Args:
+        transcribe_client:  boto3 transcribe client
+        transaction_id:     Chime SMA transaction ID (used to locate the S3 key)
+        expected_fragment:  Text substring to find in the transcript
+
+    Returns:
+        (found: bool, transcript_text: str | None)
+    """
+    if not CHIME_RECORDING_BUCKET:
+        print("   [TRANSCRIBE] CHIME_RECORDING_BUCKET not configured — skipping.")
+        return False, None
+
+    # S3 URI: s3://<bucket>/<transaction_id>/<transaction_id>.wav
+    s3_uri   = f's3://{CHIME_RECORDING_BUCKET}/{transaction_id}/{transaction_id}.wav'
+    job_name = f'voice-test-{transaction_id[:8]}-{int(time.time())}'
+
+    try:
+        transcribe_client.start_transcription_job(
+            TranscriptionJobName=job_name,
+            Media={'MediaFileUri': s3_uri},
+            MediaFormat='wav',
+            LanguageCode='en-GB',  # eu-west-2 instance — adjust for other regions
+            Settings={
+                'ShowSpeakerLabels': True,
+                'MaxSpeakerLabels': 2,  # caller + IVR system voice
+            },
+        )
+        print(f"   [TRANSCRIBE] Started job {job_name} for s3_uri={s3_uri}")
+    except Exception as e:
+        print(f"   [TRANSCRIBE] Failed to start job: {e}")
+        return False, None
+
+    # Poll for completion
+    deadline = time.time() + TRANSCRIBE_POLL_TIMEOUT_S
+    while time.time() < deadline:
+        time.sleep(15)
+        try:
+            resp   = transcribe_client.get_transcription_job(TranscriptionJobName=job_name)
+            status = resp['TranscriptionJob']['TranscriptionJobStatus']
+            print(f"   [TRANSCRIBE] Job status: {status}")
+
+            if status == 'COMPLETED':
+                transcript_uri = resp['TranscriptionJob']['Transcript']['TranscriptFileUri']
+                import urllib.request
+                with urllib.request.urlopen(transcript_uri) as r:
+                    payload    = json.loads(r.read())
+                transcript_text = payload['results']['transcripts'][0]['transcript']
+                print(f"   [TRANSCRIBE] Transcript: {transcript_text[:200]}")
+                found = expected_fragment.lower() in transcript_text.lower()
+                return found, transcript_text
+
+            if status in ('FAILED', 'STOPPED'):
+                reason = resp['TranscriptionJob'].get('FailureReason', 'unknown')
+                print(f"   [TRANSCRIBE] Job {status}: {reason}")
+                return False, None
+        except Exception as e:
+            print(f"   [TRANSCRIBE] Poll error: {e}")
+            return False, None
+
+    print("   [TRANSCRIBE] Job timed out.")
+    try:
+        transcribe_client.delete_transcription_job(TranscriptionJobName=job_name)
+    except Exception:
+        pass
+    return False, None
+
 @pytest.mark.parametrize("test_case", load_test_cases())
 def test_connect_voice_flow(test_case, request):
     """
@@ -396,7 +601,7 @@ def test_connect_voice_flow(test_case, request):
       - Disconnect behaviour for closed-hours / out-of-hours scenarios
       - Transfer queue routing (escalation, specialist)
     """
-    connect_client, chime_client, dynamodb, _transcribe_client = get_clients()
+    connect_client, chime_client, dynamodb, transcribe_client, logs_client = get_clients()
 
     print(f"\n{'='*68}")
     print(f"TEST: {test_case['name']}")
@@ -608,25 +813,102 @@ def test_connect_voice_flow(test_case, request):
             if test_case.get('expected_contact_attributes'):
                 print("   > PASS: All expected contact attributes verified.")
 
-        # --- expected_flow_transfer: verify the contact was handled by a named sub-flow ---
-        # NOTE: Connect does not expose TransferToFlow destination in the CTR API directly.
-        # We validate indirectly by checking disconnect reason and AgentConnectionAttempts=0
-        # for flows that end without a queue.  The field is preserved as documentation.
-        expected_flow = test_case.get('expected_flow_transfer')
-        if expected_flow and contact:
-            # If the sub-flow disconnects without a queue, AgentConnectionAttempts must be 0
-            agent_attempts = contact.get('AgentConnectionAttempts', 0)
-            assert agent_attempts == 0, (
-                f"FAIL: expected_flow_transfer='{expected_flow}' implies no agent, "
-                f"but AgentConnectionAttempts={agent_attempts}."
-            )
-            print(f"   > PASS: Sub-flow '{expected_flow}' — no agent connection (expected).")
+        contact_id = contact.get('Id') if contact else None
 
-        # --- expected_message_fragment: noted for documentation; not directly verifiable via API ---
+        # ---------------------------------------------------------------
+        # expected_flow_transfer
+        # Primary:  CloudWatch Logs Insights query for Type=TransferToFlow
+        #           with ContactFlowName matching the expected sub-flow.
+        # Fallback: AgentConnectionAttempts==0 (indirect — any no-agent path)
+        # ---------------------------------------------------------------
+        expected_flow = test_case.get('expected_flow_transfer')
+        if expected_flow and contact_id:
+            print(f"\n[STEP 7a] Verifying flow transfer to '{expected_flow}'...")
+
+            flow_found, flow_actual = query_contact_flow_logs(
+                logs_client,
+                contact_id,
+                call_start_ts,
+                block_type='TransferToFlow',
+                value_field='Parameters.ContactFlowName',
+                expected_value=expected_flow,
+            )
+
+            if CONNECT_FLOW_LOG_GROUP:
+                # Hard assertion: log group configured, query ran — require exact match
+                assert flow_found, (
+                    f"FAIL: expected_flow_transfer='{expected_flow}' not found in "
+                    f"CloudWatch flow logs for contact {contact_id}. "
+                    f"Last seen ContactFlowName='{flow_actual}'."
+                )
+                print(f"   > PASS (CWL): TransferToFlow to '{expected_flow}' confirmed in logs.")
+            else:
+                # Soft fallback: no log group — fall back to AgentConnectionAttempts==0
+                agent_attempts = contact.get('AgentConnectionAttempts', 0)
+                assert agent_attempts == 0, (
+                    f"FAIL: expected_flow_transfer='{expected_flow}' — CWL not configured. "
+                    f"Fallback check: AgentConnectionAttempts={agent_attempts} (expected 0)."
+                )
+                print(
+                    f"   > WARN: expected_flow_transfer validated via fallback only "
+                    f"(AgentConnectionAttempts=0). Configure CONNECT_FLOW_LOG_GROUP for "
+                    f"exact sub-flow verification."
+                )
+
+        # ---------------------------------------------------------------
+        # expected_message_fragment
+        # Primary:  CloudWatch Logs Insights query for Type=MessageParticipant
+        #           with Parameters.Text containing the expected fragment.
+        # Fallback: Amazon Transcribe on Chime-recorded call audio from S3.
+        # ---------------------------------------------------------------
         expected_msg = test_case.get('expected_message_fragment')
-        if expected_msg and contact:
-            print(f"   > INFO: expected_message_fragment='{expected_msg}' — "
-                  "verify manually via call recording or Connect contact trace.")
+        if expected_msg and contact_id:
+            print(f"\n[STEP 7b] Verifying message fragment '{expected_msg}'...")
+            msg_verified = False
+
+            # -- Track 1: CloudWatch Logs (instant, no audio needed) --
+            if CONNECT_FLOW_LOG_GROUP:
+                msg_found, msg_actual = query_contact_flow_logs(
+                    logs_client,
+                    contact_id,
+                    call_start_ts,
+                    block_type='MessageParticipant',
+                    value_field='Parameters.Text',
+                    expected_value=expected_msg,
+                )
+                if msg_found:
+                    print(f"   > PASS (CWL): Message fragment '{expected_msg}' confirmed in flow logs.")
+                    msg_verified = True
+                else:
+                    print(
+                        f"   > WARN (CWL): Fragment not found in flow logs. "
+                        f"Last Parameters.Text='{msg_actual}'. Attempting Transcribe fallback."
+                    )
+
+            # -- Track 2: Amazon Transcribe fallback --
+            if not msg_verified and transaction_id:
+                t_found, t_text = transcribe_chime_audio(
+                    transcribe_client, transaction_id, expected_msg
+                )
+                if t_found:
+                    print(f"   > PASS (Transcribe): Fragment '{expected_msg}' found in transcript.")
+                    msg_verified = True
+                elif t_text is not None:
+                    print(f"   > FAIL (Transcribe): Fragment not found. Transcript='{t_text[:300]}'")
+
+            if not msg_verified:
+                # Only hard-fail if at least one verification track ran
+                if CONNECT_FLOW_LOG_GROUP or (CHIME_RECORDING_BUCKET and transaction_id):
+                    assert False, (
+                        f"FAIL: expected_message_fragment='{expected_msg}' not found via "
+                        f"CloudWatch Logs or Transcribe for contact {contact_id}."
+                    )
+                else:
+                    print(
+                        f"   > SKIP: expected_message_fragment='{expected_msg}' — "
+                        "neither CONNECT_FLOW_LOG_GROUP nor CHIME_RECORDING_BUCKET is "
+                        "configured. Set at least one to enable this assertion."
+                    )
 
     else:
         print("   > [MOCK] Skipping live assertions.")
