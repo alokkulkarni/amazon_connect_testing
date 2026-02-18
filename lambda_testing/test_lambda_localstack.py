@@ -123,22 +123,35 @@ def _setup_resources(clients: dict, setup_config: dict) -> None:
 def localstack_container():
     """Start a LocalStack container once for the entire test session.
 
-    LAMBDA_EXECUTOR=local tells LocalStack to run Lambda functions directly
-    inside its own container (no inner Docker daemon needed).  Without this
-    LocalStack 3.x tries to launch per-invocation Docker containers, which
-    fails when the host Docker socket is not mounted – causing every function
-    to land in 'Failed' state immediately after creation.
+    LocalStack 3.x uses Docker to run Lambda functions (the 'new Lambda
+    provider').  The LAMBDA_EXECUTOR=local env var was removed in LocalStack
+    2.0 and has no effect.  The only way to make Lambda work when LocalStack
+    itself runs inside a container (as testcontainers launches it) is to
+    bind-mount the host Docker socket into the LocalStack container so it can
+    reach the host daemon and spin up Lambda runtime containers from inside.
+
+    On macOS with Docker Desktop the socket is always at /var/run/docker.sock
+    (Docker Desktop creates a compatibility symlink).
+    On Linux CI it is also /var/run/docker.sock by default.
     """
+    import os
+
+    docker_sock = "/var/run/docker.sock"
+
     container = LocalStackContainer(
         image="localstack/localstack:3.4.0",
     )
     container.with_services("lambda", "s3", "dynamodb")
-    # Use in-process executor so no Docker-in-Docker is required
-    container.with_env("LAMBDA_EXECUTOR", "local")
-    container.with_env("LAMBDA_IGNORE_ARCHITECTURE", "1")  # avoids arm64/amd64 mismatch on Apple Silicon
+    # Mount host Docker socket so LocalStack can launch Lambda runtime containers
+    if os.path.exists(docker_sock):
+        container.with_volume_mapping(docker_sock, docker_sock, "rw")
+    # Prevent arm64/amd64 architecture mismatch errors on Apple Silicon Macs
+    container.with_env("LAMBDA_IGNORE_ARCHITECTURE", "1")
+    # Give Lambda a generous startup timeout (image pull on first run)
+    container.with_env("LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT", "60")
     with container as ls:
-        # Brief pause to let services initialise
-        time.sleep(2)
+        # Wait for LocalStack to be fully ready
+        time.sleep(3)
         yield ls
 
 
