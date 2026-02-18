@@ -1,0 +1,131 @@
+{
+  "generated_at": "2026-02-18T18:39:34.963577+00:00",
+  "summary": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0,
+    "skipped": 0,
+    "errored": 0
+  },
+  "test_cases": [
+    {
+      "name": "test_lambda_function[TC-001 S3 event \\u2192 DynamoDB writer (happy path)]",
+      "outcome": "PASSED",
+      "duration_s": 4.152,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:20.899559+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-002 Simple greeting function (happy path)]",
+      "outcome": "PASSED",
+      "duration_s": 0.821,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:21.722815+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-003 Lambda writes output to S3]",
+      "outcome": "PASSED",
+      "duration_s": 0.894,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:22.619129+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-004 Environment variable passthrough]",
+      "outcome": "PASSED",
+      "duration_s": 0.794,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:23.414823+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-005 Invalid S3 event structure (error path \\u2013 400)]",
+      "outcome": "PASSED",
+      "duration_s": 0.829,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:24.244935+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-006 Missing required env var TABLE_NAME (error path \\u2013 500)]",
+      "outcome": "PASSED",
+      "duration_s": 0.835,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:25.081615+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-007 Unhandled exception triggers FunctionError]",
+      "outcome": "PASSED",
+      "duration_s": 0.821,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:25.904242+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-008 DynamoDB conditional write \\u2013 new item created (201)]",
+      "outcome": "PASSED",
+      "duration_s": 0.899,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:26.804276+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-009 Chime Handler \\u2013 NEW_INBOUND_CALL returns empty Actions]",
+      "outcome": "PASSED",
+      "duration_s": 0.876,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:27.682141+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-010 Chime Handler \\u2013 RINGING returns empty Actions]",
+      "outcome": "PASSED",
+      "duration_s": 0.867,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:28.550083+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-011 Chime Handler \\u2013 CALL_UPDATE_REQUESTED hangup returns Hangup action]",
+      "outcome": "PASSED",
+      "duration_s": 0.883,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:29.434329+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-012 Chime Handler \\u2013 no conversation_id returns empty Actions]",
+      "outcome": "PASSED",
+      "duration_s": 0.855,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:30.289512+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-013 Chime Handler \\u2013 CALL_ANSWERED with DTMF step returns SendDigits]",
+      "outcome": "PASSED",
+      "duration_s": 0.918,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:31.209230+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-014 Chime Handler \\u2013 CALL_ANSWERED with Speak step returns Speak action]",
+      "outcome": "PASSED",
+      "duration_s": 0.878,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:32.087414+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-015 Chime Handler \\u2013 ACTION_SUCCESSFUL advances mid-script to Speak step]",
+      "outcome": "PASSED",
+      "duration_s": 0.882,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:32.970771+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-016 Chime Handler \\u2013 ACTION_SUCCESSFUL end-of-script marks COMPLETED]",
+      "outcome": "PASSED",
+      "duration_s": 0.9,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:33.872992+00:00"
+    },
+    {
+      "name": "test_lambda_function[TC-017 Chime Handler \\u2013 ACTION_FAILED returns Hangup and marks FAILED]",
+      "outcome": "PASSED",
+      "duration_s": 0.892,
+      "error": null,
+      "timestamp": "2026-02-18T18:39:34.765498+00:00"
+    }
+  ]
+}
