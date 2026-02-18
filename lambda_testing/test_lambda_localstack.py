@@ -36,7 +36,9 @@ TEST_CASES_FILE  = os.path.join(_HERE, "lambda_test_cases.json")
 LAMBDA_CODE_FILE = os.path.join(_HERE, "sample_lambda.py")
 LAMBDA_ZIP_FILE  = os.path.join(_HERE, "lambda_function.zip")
 
-# Load .env from repo root (best-effort – no error if missing)
+# Load .env from this folder first (lambda_testing/.env), then fall back to
+# the repo-root .env so that suite-local overrides take precedence.
+load_dotenv(os.path.join(_HERE,      ".env"), override=False)
 load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=False)
 
 # LocalStack mock credentials (never real AWS)

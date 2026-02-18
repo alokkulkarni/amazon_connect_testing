@@ -31,10 +31,12 @@ from botocore.exceptions import ClientError, NoCredentialsError
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
-# Bootstrap: load .env from the repo root (one level up from lex_testing/)
+# Bootstrap: load .env from this folder (lex_testing/.env) first, then fall
+# back to the repo-root .env so that suite-local overrides take precedence.
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
+load_dotenv(os.path.join(_HERE,      ".env"))
 load_dotenv(os.path.join(_REPO_ROOT, ".env"))
 
 # ---------------------------------------------------------------------------

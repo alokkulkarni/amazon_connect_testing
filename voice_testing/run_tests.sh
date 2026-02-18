@@ -16,15 +16,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# Load .env from repo root (best-effort)
+# Load .env: suite-local first, then repo root as fallback
 # ---------------------------------------------------------------------------
-ENV_FILE="${REPO_ROOT}/.env"
-if [ -f "${ENV_FILE}" ]; then
+if [ -f "${SCRIPT_DIR}/.env" ]; then
   set -o allexport
   # shellcheck disable=SC1090
-  source "${ENV_FILE}"
+  source "${SCRIPT_DIR}/.env"
   set +o allexport
-  echo "[info] Loaded environment from ${ENV_FILE}"
+  echo "[info] Loaded environment from ${SCRIPT_DIR}/.env"
+elif [ -f "${REPO_ROOT}/.env" ]; then
+  set -o allexport
+  # shellcheck disable=SC1090
+  source "${REPO_ROOT}/.env"
+  set +o allexport
+  echo "[info] Loaded environment from ${REPO_ROOT}/.env (fallback)"
 fi
 
 # ---------------------------------------------------------------------------

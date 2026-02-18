@@ -23,11 +23,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# ---- Load .env if present at repo root -----------------------------------
-if [ -f "${REPO_ROOT}/.env" ]; then
-    # shellcheck source=/dev/null
+# ---- Load .env: suite-local first, then repo root as fallback -----------
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    set -a; source "${SCRIPT_DIR}/.env"; set +a
+    echo "Loaded .env from ${SCRIPT_DIR}/.env"
+elif [ -f "${REPO_ROOT}/.env" ]; then
     set -a; source "${REPO_ROOT}/.env"; set +a
-    echo "Loaded .env from ${REPO_ROOT}/.env"
+    echo "Loaded .env from ${REPO_ROOT}/.env (fallback)"
 fi
 
 # ---- Banner --------------------------------------------------------------
@@ -43,7 +45,7 @@ echo "================================================================"
 # ---- Pre-flight checks ---------------------------------------------------
 if ! command -v pytest &>/dev/null; then
     echo "ERROR: pytest is not installed."
-    echo "  Run:  pip install -r ${REPO_ROOT}/requirements.txt"
+    echo "  Run:  pip install -r ${SCRIPT_DIR}/requirements.txt"
     exit 1
 fi
 
@@ -70,8 +72,8 @@ echo ""
 echo "Running: pytest ${PYTEST_ARGS} ${SCRIPT_DIR}/test_lex_bots.py"
 echo ""
 
-# Change to repo root so relative imports (e.g. .env discovery) work
-cd "${REPO_ROOT}"
+# Run from SCRIPT_DIR so __file__-based .env discovery resolves correctly
+cd "${SCRIPT_DIR}"
 
 # shellcheck disable=SC2086
 pytest ${PYTEST_ARGS} "${SCRIPT_DIR}/test_lex_bots.py"

@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.*.local
+# Per-suite .env files (explicit paths for clarity)
+voice_testing/.env
+lex_testing/.env
+lambda_testing/.env
 
 # Python
 __pycache__/

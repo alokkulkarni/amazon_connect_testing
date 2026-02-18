@@ -32,7 +32,9 @@ from decimal import Decimal
 _HERE      = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
 
-# Load .env from repo root (best-effort – no error if missing)
+# Load .env from this folder first (voice_testing/.env), then fall back to
+# the repo-root .env so that local overrides take precedence.
+load_dotenv(os.path.join(_HERE, '.env'),      override=False)
 load_dotenv(os.path.join(_REPO_ROOT, '.env'), override=False)
 
 # ---------------------------------------------------------------------------
