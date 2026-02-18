@@ -234,5 +234,424 @@
         }
       }
     }
+  },
+
+  {
+    "name": "TC-009 Chime Handler – NEW_INBOUND_CALL returns empty Actions",
+    "description": "SMA fires NEW_INBOUND_CALL. Handler fetches DynamoDB state then immediately returns SchemaVersion 1.0 with an empty Actions array so the call is not dropped.",
+    "function_name": "chime-handler-inbound",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-inbound-001"},
+            "script": {"S": "[{\"type\": \"dtmf\", \"digits\": \"1\", \"duration_ms\": 500}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "READY"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "NEW_INBOUND_CALL",
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-inbound-001"},
+        "Participants": [{"CallId": "call-inbound-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_json": {
+        "SchemaVersion": "1.0",
+        "Actions": []
+      }
+    }
+  },
+
+  {
+    "name": "TC-010 Chime Handler – RINGING returns empty Actions",
+    "description": "SMA fires RINGING before the call is answered. Handler should return empty Actions to let the ring continue.",
+    "function_name": "chime-handler-ringing",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-ringing-001"},
+            "script": {"S": "[{\"type\": \"dtmf\", \"digits\": \"1\", \"duration_ms\": 500}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "READY"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "RINGING",
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-ringing-001"},
+        "Participants": [{"CallId": "call-ringing-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_json": {
+        "SchemaVersion": "1.0",
+        "Actions": []
+      }
+    }
+  },
+
+  {
+    "name": "TC-011 Chime Handler – CALL_UPDATE_REQUESTED hangup returns Hangup action",
+    "description": "Test framework triggers CALL_UPDATE_REQUESTED with action=hangup (manual teardown). Handler must return a Hangup action.",
+    "function_name": "chime-handler-update-hangup",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-update-001"},
+            "script": {"S": "[{\"type\": \"dtmf\", \"digits\": \"1\", \"duration_ms\": 500}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "READY"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "CALL_UPDATE_REQUESTED",
+      "ActionData": {
+        "Parameters": {
+          "Arguments": {"action": "hangup"}
+        }
+      },
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-update-001"},
+        "Participants": [{"CallId": "call-update-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_first_action_type": "Hangup"
+    }
+  },
+
+  {
+    "name": "TC-012 Chime Handler – no conversation_id returns empty Actions",
+    "description": "Event arrives with no conversation_id in any location. Handler must return empty SchemaVersion 1.0 response without calling DynamoDB.",
+    "function_name": "chime-handler-no-convid",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {},
+    "trigger_event": {
+      "InvocationEventType": "ACTION_SUCCESSFUL",
+      "CallDetails": {
+        "TransactionAttributes": {},
+        "Participants": [{"CallId": "call-no-id-001", "ParticipantTag": "LEG-A"}]
+      }
+    },
+    "validations": {
+      "response_json": {
+        "SchemaVersion": "1.0",
+        "Actions": []
+      }
+    }
+  },
+
+  {
+    "name": "TC-013 Chime Handler – CALL_ANSWERED with DTMF step returns SendDigits",
+    "description": "Call answered with a DTMF step as the first script action. Handler must return a SendDigits action for the digit in the script.",
+    "function_name": "chime-handler-ca-dtmf",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-ca-dtmf-001"},
+            "script": {"S": "[{\"type\": \"dtmf\", \"digits\": \"1\", \"duration_ms\": 500}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "READY"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "CALL_ANSWERED",
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-ca-dtmf-001"},
+        "Participants": [{"CallId": "call-ca-dtmf-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_first_action_type": "SendDigits"
+    }
+  },
+
+  {
+    "name": "TC-014 Chime Handler – CALL_ANSWERED with Speak step returns Speak action",
+    "description": "Call answered with a speak step as the first script action. Handler must return a Speak (TTS) action.",
+    "function_name": "chime-handler-ca-speak",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-ca-speak-001"},
+            "script": {"S": "[{\"type\": \"speak\", \"text\": \"Hello from Connect\"}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "READY"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "CALL_ANSWERED",
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-ca-speak-001"},
+        "Participants": [{"CallId": "call-ca-speak-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_first_action_type": "Speak"
+    }
+  },
+
+  {
+    "name": "TC-015 Chime Handler – ACTION_SUCCESSFUL advances mid-script to Speak step",
+    "description": "Script has two steps: DTMF then Speak. Call is at step 0. ACTION_SUCCESSFUL fires (DTMF completed), handler advances to step 1 (Speak) and returns a Speak action.",
+    "function_name": "chime-handler-as-mid",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-as-mid-001"},
+            "script": {"S": "[{\"type\": \"dtmf\", \"digits\": \"1\", \"duration_ms\": 500}, {\"type\": \"speak\", \"text\": \"Transfer complete\"}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "IN_PROGRESS"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "ACTION_SUCCESSFUL",
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-as-mid-001"},
+        "Participants": [{"CallId": "call-as-mid-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_first_action_type": "Speak"
+    }
+  },
+
+  {
+    "name": "TC-016 Chime Handler – ACTION_SUCCESSFUL end-of-script marks COMPLETED",
+    "description": "Script has one step (DTMF) at index 0. ACTION_SUCCESSFUL fires; next index (1) >= script length (1), so handler marks the conversation COMPLETED and returns empty Actions.",
+    "function_name": "chime-handler-as-eos",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-as-eos-001"},
+            "script": {"S": "[{\"type\": \"dtmf\", \"digits\": \"1\", \"duration_ms\": 500}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "IN_PROGRESS"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "ACTION_SUCCESSFUL",
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-as-eos-001"},
+        "Participants": [{"CallId": "call-as-eos-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_json": {
+        "SchemaVersion": "1.0",
+        "Actions": []
+      },
+      "dynamodb_item": {
+        "TableName": "ChimeVoiceState",
+        "Key": {"conversation_id": {"S": "chime-as-eos-001"}},
+        "ExpectedAttributeValue": {
+          "status": {"S": "COMPLETED"}
+        }
+      }
+    }
+  },
+
+  {
+    "name": "TC-017 Chime Handler – ACTION_FAILED returns Hangup and marks FAILED",
+    "description": "A Chime SMA action failed (e.g. TTS error). Handler must hang up the call and write status=FAILED to DynamoDB to prevent zombie calls.",
+    "function_name": "chime-handler-action-failed",
+    "handler": "lambda_function.lambda_handler",
+    "source_file": "../voice_testing/chime_handler_lambda.py",
+    "timeout": 15,
+    "memory_size": 128,
+    "environment_variables": {
+      "DYNAMODB_TABLE_NAME": "ChimeVoiceState",
+      "ENV_NAME": "test"
+    },
+    "setup": {
+      "dynamodb_tables": [
+        {
+          "TableName": "ChimeVoiceState",
+          "KeySchema": [{"AttributeName": "conversation_id", "KeyType": "HASH"}],
+          "AttributeDefinitions": [{"AttributeName": "conversation_id", "AttributeType": "S"}],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      ],
+      "dynamodb_items": [
+        {
+          "TableName": "ChimeVoiceState",
+          "Item": {
+            "conversation_id": {"S": "chime-af-001"},
+            "script": {"S": "[{\"type\": \"speak\", \"text\": \"Hello\"}]"},
+            "current_step_index": {"N": "0"},
+            "status": {"S": "IN_PROGRESS"}
+          }
+        }
+      ]
+    },
+    "trigger_event": {
+      "InvocationEventType": "ACTION_FAILED",
+      "ActionData": {
+        "ErrorMessage": "SpeakFailed: Polly TTS error"
+      },
+      "CallDetails": {
+        "TransactionAttributes": {"conversation_id": "chime-af-001"},
+        "Participants": [{"CallId": "call-af-001", "ParticipantTag": "LEG-A", "Direction": "Inbound"}]
+      }
+    },
+    "validations": {
+      "response_first_action_type": "Hangup",
+      "dynamodb_item": {
+        "TableName": "ChimeVoiceState",
+        "Key": {"conversation_id": {"S": "chime-af-001"}},
+        "ExpectedAttributeValue": {
+          "status": {"S": "FAILED"}
+        }
+      }
+    }
   }
 ]

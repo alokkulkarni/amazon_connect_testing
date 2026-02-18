@@ -133,7 +133,7 @@ def lambda_handler(event, context):
         print(f"Call Answered. Starting conversation at step {current_step_index}")
         # Pre-set attributes: stored in DynamoDB by the test seeder
         # The Lambda surfaces them in TransactionAttributes so they can be monitored.
-        pre_set_raw = conversation_item.get('pre_set_attributes')
+        pre_set_raw = item.get('pre_set_attributes')
         if pre_set_raw:
             try:
                 pre_attrs = json.loads(pre_set_raw) if isinstance(pre_set_raw, str) else pre_set_raw

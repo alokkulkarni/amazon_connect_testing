@@ -149,6 +149,16 @@ def _setup_resources(clients: dict, setup_config: dict) -> None:
             if exc.response["Error"]["Code"] != "ResourceInUseException":
                 raise
 
+    for item_def in setup_config.get("dynamodb_items", []):
+        try:
+            clients["dynamodb"].put_item(
+                TableName=item_def["TableName"],
+                Item=item_def["Item"],
+            )
+            print(f"  [setup] DynamoDB item seeded: table={item_def['TableName']}")
+        except ClientError as exc:
+            raise
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -245,12 +255,33 @@ def aws_clients(localstack_container):
 
 
 @pytest.fixture(scope="session")
-def lambda_zip(tmp_path_factory):
-    """Build the Lambda deployment ZIP once per session."""
-    zip_path = str(tmp_path_factory.mktemp("lambda_pkg") / "lambda_function.zip")
-    create_lambda_zip(LAMBDA_CODE_FILE, zip_path)
-    yield zip_path
-    # tmp_path_factory cleans up automatically
+def lambda_zip_factory(tmp_path_factory):
+    """Session-scoped factory: build and cache a deployment ZIP per source file.
+
+    Returns a callable ``get_zip(source_file) -> str`` that builds the ZIP on
+    first call for a given source path and returns the cached path thereafter.
+    This allows test cases to set a ``source_file`` field (relative to
+    lambda_testing/) to package a handler from another folder, e.g. the Chime
+    SMA handler in voice_testing/.
+
+    Usage::
+
+        zip_path = lambda_zip_factory()                      # → sample_lambda.py
+        zip_path = lambda_zip_factory("/abs/path/to/foo.py") # → custom handler
+    """
+    _cache: dict = {}
+    _base = tmp_path_factory.mktemp("lambda_pkg")
+
+    def _get_zip(source_file: str = LAMBDA_CODE_FILE) -> str:
+        path = os.path.normpath(source_file)
+        if path not in _cache:
+            zip_path = str(_base / f"lambda_{len(_cache)}.zip")
+            create_lambda_zip(path, zip_path)
+            _cache[path] = zip_path
+            print(f"  [zip] Built ZIP for {os.path.basename(path)}")
+        return _cache[path]
+
+    return _get_zip
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +293,7 @@ def lambda_zip(tmp_path_factory):
     load_test_cases(),
     ids=_test_case_id,
 )
-def test_lambda_function(aws_clients, lambda_zip, test_case):
+def test_lambda_function(aws_clients, lambda_zip_factory, test_case):
     name          = test_case["name"]
     function_name = test_case["function_name"]
     handler       = test_case["handler"]
@@ -282,7 +313,15 @@ def test_lambda_function(aws_clients, lambda_zip, test_case):
     # ------------------------------------------------------------------
     # 2. Deploy Lambda (delete first to guarantee a fresh state)
     # ------------------------------------------------------------------
-    with open(lambda_zip, "rb") as fh:
+    # Resolve source file: test cases may set a custom ``source_file`` path
+    # (relative to lambda_testing/) to package a handler from another folder,
+    # e.g. ``"../voice_testing/chime_handler_lambda.py"``.
+    source_rel  = test_case.get("source_file")
+    source_path = (
+        os.path.normpath(os.path.join(_HERE, source_rel))
+        if source_rel else LAMBDA_CODE_FILE
+    )
+    with open(lambda_zip_factory(source_path), "rb") as fh:
         zip_bytes = fh.read()
 
     try:
@@ -375,7 +414,40 @@ def test_lambda_function(aws_clients, lambda_zip, test_case):
                     f"not in {actual_body!r}"
                 )
 
-    # --- 4c. DynamoDB item validation --------------------------------------
+    # --- 4c. Chime / raw JSON response validation --------------------------
+    # Validates top-level keys in the response payload directly (exact match
+    # per key).  Designed for Chime SMA handlers that return
+    # ``{"SchemaVersion": "1.0", "Actions": [...]}`` rather than the HTTP
+    # ``{"statusCode": 200, "body": "..."}`` shape used by API Gateway handlers.
+    if "response_json" in validations:
+        for rj_key, rj_expected in validations["response_json"].items():
+            rj_actual = response_payload.get(rj_key)
+            if rj_actual != rj_expected:
+                _fail(
+                    f"response_json['{rj_key}']: expected {rj_expected!r}, "
+                    f"got {rj_actual!r}"
+                )
+
+    # --- 4d. First Action type check --------------------------------------
+    # Validates the ``Type`` field of ``Actions[0]`` in the response payload.
+    # Designed for Chime SMA responses whose ``Actions`` array drives the call.
+    if "response_first_action_type" in validations:
+        expected_type = validations["response_first_action_type"]
+        actions_list  = response_payload.get("Actions", [])
+        if not actions_list:
+            _fail(
+                f"response_first_action_type={expected_type!r}: "
+                f"Actions array is empty or missing."
+            )
+        else:
+            actual_type = actions_list[0].get("Type")
+            if actual_type != expected_type:
+                _fail(
+                    f"response_first_action_type: expected {expected_type!r}, "
+                    f"got {actual_type!r}"
+                )
+
+    # --- 4e. DynamoDB item validation --------------------------------------
     if "dynamodb_item" in validations:
         ddb_val  = validations["dynamodb_item"]
         table    = ddb_val["TableName"]
@@ -398,7 +470,7 @@ def test_lambda_function(aws_clients, lambda_zip, test_case):
         except ClientError as exc:
             _fail(f"DynamoDB get_item error: {exc}")
 
-    # --- 4d. S3 object validation ------------------------------------------
+    # --- 4f. S3 object validation ------------------------------------------
     if "s3_object" in validations:
         s3_val  = validations["s3_object"]
         bucket  = s3_val["Bucket"]
