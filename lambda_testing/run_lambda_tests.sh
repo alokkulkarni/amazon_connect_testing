@@ -45,6 +45,43 @@ if ! docker info &>/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# Container cleanup trap
+# Removes the LocalStack container and any Lambda runtime sibling containers
+# left on the host Docker daemon after the test run (or on early exit).
+# LocalStack 3.x (new Lambda provider) spins up Docker containers on the host
+# for each Lambda invocation; these survive LocalStack's own shutdown.
+# ---------------------------------------------------------------------------
+_cleanup_containers() {
+  echo ""
+  echo "[cleanup] Tearing down LocalStack and Lambda runtime containers ..."
+
+  # Lambda runtime containers (both underscore and dash naming schemes)
+  local lambda_ids
+  lambda_ids=$(docker ps -aq \
+    --filter "name=localstack_lambda" \
+    --filter "name=localstack-lambda" 2>/dev/null || true)
+  if [ -n "${lambda_ids}" ]; then
+    # shellcheck disable=SC2086
+    docker rm -f ${lambda_ids} 2>/dev/null || true
+    echo "[cleanup] Lambda runtime containers removed."
+  fi
+
+  # Any remaining container whose name starts with 'localstack' (main container)
+  local ls_ids
+  ls_ids=$(docker ps -aq --filter "name=localstack" 2>/dev/null || true)
+  if [ -n "${ls_ids}" ]; then
+    # shellcheck disable=SC2086
+    docker rm -f ${ls_ids} 2>/dev/null || true
+    echo "[cleanup] LocalStack container removed."
+  fi
+
+  echo "[cleanup] Container teardown complete."
+}
+
+# Run cleanup on normal exit, Ctrl+C (SIGINT), and SIGTERM (CI kill)
+trap _cleanup_containers EXIT INT TERM
+
+# ---------------------------------------------------------------------------
 # Create report directory
 # ---------------------------------------------------------------------------
 REPORT_DIR="${SCRIPT_DIR}/reports"

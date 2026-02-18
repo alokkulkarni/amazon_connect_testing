@@ -13,8 +13,11 @@ test. The suite:
 Path resolution is based on __file__ so tests run correctly from any cwd.
 """
 
+import atexit
 import json
 import os
+import signal
+import subprocess
 import time
 import zipfile
 
@@ -95,6 +98,36 @@ def _mk_client(service: str, endpoint_url: str):
     return boto3.client(service, endpoint_url=endpoint_url, **_LS_CREDS)
 
 
+def _cleanup_lambda_runtime_containers() -> None:
+    """Remove sibling Lambda runtime containers spawned by LocalStack on the host daemon.
+
+    LocalStack 3.x (new Lambda provider) spins up Docker containers *directly on
+    the host* for each Lambda invocation.  These are NOT children of the LocalStack
+    container, so they survive after LocalStack itself stops.  We enumerate them by
+    name prefix and force-remove them here.
+    """
+    try:
+        # Collect IDs from both naming schemes used across LocalStack versions
+        ids: list[str] = []
+        for name_filter in ("localstack_lambda", "localstack-lambda"):
+            result = subprocess.run(
+                ["docker", "ps", "-aq", "--filter", f"name={name_filter}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            ids.extend(line.strip() for line in result.stdout.splitlines() if line.strip())
+        # Deduplicate (Docker may return duplicates across filters)
+        ids = list(dict.fromkeys(ids))
+        if ids:
+            subprocess.run(["docker", "rm", "-f"] + ids, capture_output=True, timeout=15)
+            print(f"[teardown] Removed {len(ids)} Lambda runtime container(s): {ids}")
+        else:
+            print("[teardown] No Lambda runtime containers found to remove.")
+    except FileNotFoundError:
+        print("[teardown] docker CLI not found – skipping Lambda runtime container cleanup.")
+    except Exception as exc:
+        print(f"[teardown] Warning: could not clean up Lambda runtime containers: {exc}")
+
+
 def _setup_resources(clients: dict, setup_config: dict) -> None:
     """Create S3 buckets and DynamoDB tables declared in a test case's 'setup' block."""
     for bucket in setup_config.get("s3_buckets", []):
@@ -133,9 +166,16 @@ def localstack_container():
     On macOS with Docker Desktop the socket is always at /var/run/docker.sock
     (Docker Desktop creates a compatibility symlink).
     On Linux CI it is also /var/run/docker.sock by default.
-    """
-    import os
 
+    Teardown guarantees
+    -------------------
+    * ``try/finally`` – covers normal completion and Python exceptions (incl. Ctrl+C).
+    * ``atexit`` handler – covers ``sys.exit()`` calls and normal interpreter shutdown.
+    * SIGTERM handler – covers CI/orchestrator kills (Docker sends SIGTERM before SIGKILL).
+    * After the LocalStack container stops, :func:`_cleanup_lambda_runtime_containers`
+      removes any Lambda runtime containers that LocalStack spawned on the host daemon
+      (they are sibling containers and survive LocalStack's own stop).
+    """
     docker_sock = "/var/run/docker.sock"
 
     container = LocalStackContainer(
@@ -149,10 +189,46 @@ def localstack_container():
     container.with_env("LAMBDA_IGNORE_ARCHITECTURE", "1")
     # Give Lambda a generous startup timeout (image pull on first run)
     container.with_env("LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT", "60")
-    with container as ls:
-        # Wait for LocalStack to be fully ready
-        time.sleep(3)
-        yield ls
+
+    container.start()
+    # Wait for LocalStack to be fully ready
+    time.sleep(3)
+
+    # -----------------------------------------------------------------------
+    # Teardown helper – idempotent (safe to call multiple times)
+    # -----------------------------------------------------------------------
+    _stopped = [False]  # mutable sentinel prevents double-stop
+
+    def _stop_everything() -> None:
+        if _stopped[0]:
+            return
+        _stopped[0] = True
+        print("\n[teardown] Stopping LocalStack container ...")
+        try:
+            container.stop()
+            print("[teardown] LocalStack container stopped and removed.")
+        except Exception as exc:
+            print(f"[teardown] Warning: error stopping LocalStack container: {exc}")
+        # Remove Lambda runtime containers that survived LocalStack's shutdown
+        _cleanup_lambda_runtime_containers()
+
+    # Register atexit so shutdown happens even when sys.exit() is called directly
+    atexit.register(_stop_everything)
+
+    # Intercept SIGTERM (sent by Docker / CI orchestrators before SIGKILL)
+    _orig_sigterm = signal.getsignal(signal.SIGTERM)
+    def _handle_sigterm(signum, frame):  # noqa: ANN001
+        _stop_everything()
+        if callable(_orig_sigterm):
+            _orig_sigterm(signum, frame)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    try:
+        yield container
+    finally:
+        # Primary teardown path: covers normal exit, KeyboardInterrupt, and any
+        # other Python exception that unwinds the test session.
+        _stop_everything()
 
 
 @pytest.fixture(scope="session")
