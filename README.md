@@ -35,8 +35,8 @@ This project provides an automated Python framework to test Amazon Connect voice
 
 Automated testing for AWS Lambda functions using LocalStack for local emulation of AWS services.
 
-*   **Directory**: `amazon_connect_testing/lambda_testing`
-*   **Runner**: `./amazon_connect_testing/lambda_testing/run_lambda_tests.sh`
+*   **Directory**: `lambda_testing/`
+*   **Runner**: `./lambda_testing/run_lambda_tests.sh`
 *   **Features**:
     *   Spins up LocalStack in a Docker container.
     *   Deploys Lambda functions.
@@ -47,7 +47,7 @@ Automated testing for AWS Lambda functions using LocalStack for local emulation 
 ## Usage
 
 ### 1. Define Test Cases
-Edit `test_cases.json`. Note that `destination_phone` should be your Amazon Connect claimed phone number.
+Edit `voice_testing/test_cases.json`. Note that `destination_phone` should be your Amazon Connect claimed phone number.
 ```json
 [
   {
@@ -63,7 +63,7 @@ Edit `test_cases.json`. Note that `destination_phone` should be your Amazon Conn
 Run the test script using `pytest` or the helper script:
 
 ```bash
-./run_tests.sh
+./voice_testing/run_tests.sh
 ```
 To switch between mock and real modes, simply edit the `MOCK_AWS` variable in your `.env` file.
 
@@ -100,8 +100,9 @@ To validate flow logic more deeply (e.g., "did the user hear the prompt?"), cons
 -   Using a telephony testing tool (like Twilio) to place actual calls and verify audio.
 
 ## Regression Testing
-- **Voice Flows**: Run `./run_tests.sh` to test Connect flows via Chime SDK.
+- **Voice Flows**: Run `./voice_testing/run_tests.sh` to test Connect flows via Chime SDK.
 - **Lex Bots**: Run `./lex_testing/run_lex_tests.sh` to test Lex bot intent recognition. See [Lex Testing Guide](lex_testing/LEX_TESTING_GUIDE.md) for details.
+- **Lambda**: Run `./lambda_testing/run_lambda_tests.sh` to test Lambda functions against LocalStack.
 
 ## Troubleshooting
 

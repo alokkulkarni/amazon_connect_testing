@@ -1,15 +1,22 @@
 import boto3
 import zipfile
 import io
+import os
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 def update_lambda():
     lambda_client = boto3.client('lambda', region_name='us-east-1')
     function_name = 'ChimeHandler' # Replace with your actual function name if different
-    
+
+    # Resolve handler source path relative to this file so the script can be
+    # called from any working directory.
+    handler_path = os.path.join(_HERE, 'chime_handler_lambda.py')
+
     # Create zip file in memory
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        zip_file.write('chime_handler_lambda.py', arcname='lambda_function.py')
+        zip_file.write(handler_path, arcname='lambda_function.py')
     
     zip_buffer.seek(0)
     

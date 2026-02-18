@@ -26,7 +26,14 @@ from dotenv import load_dotenv
 from botocore.exceptions import ClientError
 from decimal import Decimal
 
-load_dotenv()
+# ---------------------------------------------------------------------------
+# Path resolution – always relative to this file, regardless of cwd
+# ---------------------------------------------------------------------------
+_HERE      = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+
+# Load .env from repo root (best-effort – no error if missing)
+load_dotenv(os.path.join(_REPO_ROOT, '.env'), override=False)
 
 # ---------------------------------------------------------------------------
 # Configuration
