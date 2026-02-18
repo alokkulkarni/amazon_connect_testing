@@ -1,0 +1,707 @@
+[
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 1: SINGLE-TURN – INTENT RECOGNITION",
+    "_comment3": "Validates that the bot maps utterances to the correct intent.",
+    "_comment4": "Set bot_id / bot_alias_id here or via LEX_BOT_ID / LEX_BOT_ALIAS_ID env vars.",
+    "_comment5": "================================================================="
+  },
+  {
+    "name": "INTENT-001 CheckBalance – canonical utterance",
+    "description": "Validates that 'Check my balance' maps to the CheckBalance intent on a single turn.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "Check my balance",
+    "expected_intent": "CheckBalance",
+    "expected_intent_state": "InProgress",
+    "expected_message_fragment": "balance"
+  },
+  {
+    "name": "INTENT-002 CheckBalance – alternate utterance",
+    "description": "Tests a variation of the CheckBalance utterance to ensure NLU generalisation.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "What is my current balance?",
+    "expected_intent": "CheckBalance",
+    "expected_message_fragment": "balance"
+  },
+  {
+    "name": "INTENT-003 TransferFunds – intent detected",
+    "description": "Validates that a transfer request maps to TransferFunds; Lex should begin eliciting slots.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "I want to transfer money to my savings account",
+    "expected_intent": "TransferFunds",
+    "expected_dialog_state": "ElicitSlot"
+  },
+  {
+    "name": "INTENT-004 PayBill – intent detected",
+    "description": "Validates PayBill intent is triggered; bot should start asking for bill or amount.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "I'd like to pay my electricity bill",
+    "expected_intent": "PayBill",
+    "expected_dialog_state": "ElicitSlot"
+  },
+  {
+    "name": "INTENT-005 ReportLostCard – intent detected",
+    "description": "Validates ReportLostCard is triggered; urgent intent should route to agent.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "My card has been stolen",
+    "expected_intent": "ReportLostCard",
+    "expected_message_fragment": "card"
+  },
+  {
+    "name": "INTENT-006 OpenAccount – intent detected",
+    "description": "Tests that account opening request maps to OpenAccount intent.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "I want to open a new account",
+    "expected_intent": "OpenAccount",
+    "expected_dialog_state": "ElicitSlot"
+  },
+  {
+    "name": "INTENT-007 Help – help intent",
+    "description": "Validates that a generic help utterance maps to the Help intent.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "What can you help me with?",
+    "expected_intent": "Help",
+    "expected_message_fragment": "help"
+  },
+  {
+    "name": "INTENT-008 Goodbye – session end intent",
+    "description": "Validates that a goodbye utterance maps to the Goodbye intent and bot closes session.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "Goodbye, thank you",
+    "expected_intent": "Goodbye",
+    "expected_message_fragment": "goodbye"
+  },
+  {
+    "name": "INTENT-009 FallbackIntent – unrecognised input",
+    "description": "Validates that gibberish triggers FallbackIntent.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "xyzzy flibbertigibbet unrecognised phrase",
+    "expected_intent": "FallbackIntent",
+    "expected_message_fragment": "understand"
+  },
+  {
+    "name": "INTENT-010 FallbackIntent – out-of-scope topic",
+    "description": "Validates that an out-of-domain utterance correctly falls back.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "What is the weather like in London?",
+    "expected_intent": "FallbackIntent"
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 2: SINGLE-TURN – SLOT FILLING (ONE-SHOT)",
+    "_comment3": "Validates that all required slots can be extracted from a single rich utterance."
+  },
+  {
+    "name": "SLOT-001 CheckBalance – accountType=checking inline",
+    "description": "Tests that accountType=checking is extracted when provided in the opening utterance.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "What is the balance of my checking account?",
+    "expected_intent": "CheckBalance",
+    "expected_slots": { "accountType": "checking" }
+  },
+  {
+    "name": "SLOT-002 CheckBalance – accountType=savings inline",
+    "description": "Tests accountType=savings is extracted from a single utterance.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "Show me the balance on my savings account",
+    "expected_intent": "CheckBalance",
+    "expected_slots": { "accountType": "savings" }
+  },
+  {
+    "name": "SLOT-003 TransferFunds – amount and toAccount in one utterance",
+    "description": "Tests that amount and toAccount slots are extracted from a single rich utterance.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "Transfer five hundred dollars to my savings account",
+    "expected_intent": "TransferFunds",
+    "expected_slots": {
+      "amount": "500",
+      "toAccount": "savings"
+    }
+  },
+  {
+    "name": "SLOT-004 PayBill – billType and amount inline",
+    "description": "Validates that billType=electricity and amount are extracted in one shot.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "Pay my electricity bill of 120 pounds",
+    "expected_intent": "PayBill",
+    "expected_slots": {
+      "billType": "electricity",
+      "amount": "120"
+    }
+  },
+  {
+    "name": "SLOT-005 OpenAccount – accountType=current inline",
+    "description": "Validates accountType slot is extracted when the user specifies account type upfront.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "I'd like to open a current account",
+    "expected_intent": "OpenAccount",
+    "expected_slots": { "accountType": "current" }
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 3: MULTI-TURN CONVERSATIONS – SLOT ELICITATION",
+    "_comment3": "Uses 'turns' array. Session continuity is maintained per-test via a shared session_id."
+  },
+  {
+    "name": "MULTI-001 CheckBalance – slot elicitation for accountType",
+    "description": "User asks for balance without specifying account type; bot must elicit accountType, then fulfil.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "I want to check my balance",
+        "expected_intent": "CheckBalance",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "accountType",
+        "expected_message_fragment": "account"
+      },
+      {
+        "input_text": "My checking account please",
+        "expected_intent": "CheckBalance",
+        "expected_slots": { "accountType": "checking" },
+        "expected_dialog_state": "Fulfilled",
+        "expected_intent_state": "Fulfilled",
+        "expected_message_fragment": "balance"
+      }
+    ]
+  },
+  {
+    "name": "MULTI-002 TransferFunds – multi-slot elicitation (amount → toAccount → confirm)",
+    "description": "Full multi-turn transfer: bot elicits amount, then toAccount, then confirms.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "I want to transfer some money",
+        "expected_intent": "TransferFunds",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "amount",
+        "expected_message_fragment": "much"
+      },
+      {
+        "input_text": "Two hundred and fifty pounds",
+        "expected_intent": "TransferFunds",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "toAccount",
+        "expected_slots": { "amount": "250" },
+        "expected_message_fragment": "account"
+      },
+      {
+        "input_text": "To my savings account",
+        "expected_intent": "TransferFunds",
+        "expected_dialog_state": "ConfirmIntent",
+        "expected_slots": { "amount": "250", "toAccount": "savings" },
+        "expected_message_fragment": "confirm"
+      },
+      {
+        "input_text": "Yes, please proceed",
+        "expected_intent": "TransferFunds",
+        "expected_dialog_state": "Fulfilled",
+        "expected_intent_state": "Fulfilled",
+        "expected_message_fragment": "transfer"
+      }
+    ]
+  },
+  {
+    "name": "MULTI-003 TransferFunds – user denies confirmation (denial path)",
+    "description": "Validates that when the user says 'no' at confirmation, intent transitions to Failed.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Transfer one hundred pounds to current account",
+        "expected_intent": "TransferFunds",
+        "expected_dialog_state": "ConfirmIntent",
+        "expected_slots": { "amount": "100", "toAccount": "current" }
+      },
+      {
+        "input_text": "No, cancel that",
+        "expected_intent": "TransferFunds",
+        "expected_intent_state": "Failed",
+        "expected_message_fragment": "cancel"
+      }
+    ]
+  },
+  {
+    "name": "MULTI-004 PayBill – full slot elicitation and confirm",
+    "description": "Tests full PayBill flow: bot elicits billType then amount, then confirms.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Pay my gas bill",
+        "expected_intent": "PayBill",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "amount",
+        "expected_message_fragment": "amount"
+      },
+      {
+        "input_text": "Eighty pounds",
+        "expected_intent": "PayBill",
+        "expected_slots": { "billType": "gas", "amount": "80" },
+        "expected_dialog_state": "ConfirmIntent"
+      },
+      {
+        "input_text": "Yes",
+        "expected_intent": "PayBill",
+        "expected_intent_state": "Fulfilled",
+        "expected_message_fragment": "paid"
+      }
+    ]
+  },
+  {
+    "name": "MULTI-005 ReportLostCard – urgent flow: elicit card digits then fulfil",
+    "description": "Validates the lost/stolen card flow elicits last 4 card digits then routes to agent.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "I've lost my debit card",
+        "expected_intent": "ReportLostCard",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "cardLastFourDigits",
+        "expected_message_fragment": "last four"
+      },
+      {
+        "input_text": "The last four digits are 4892",
+        "expected_intent": "ReportLostCard",
+        "expected_slots": { "cardLastFourDigits": "4892" },
+        "expected_dialog_state": "Fulfilled",
+        "expected_intent_state": "Fulfilled",
+        "expected_message_fragment": "block"
+      }
+    ]
+  },
+  {
+    "name": "MULTI-006 OpenAccount – multi-slot: accountType then initialDeposit",
+    "description": "Validates bot elicits accountType then initialDeposit in sequence, then confirms.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "I want to open an account",
+        "expected_intent": "OpenAccount",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "accountType",
+        "expected_message_fragment": "type"
+      },
+      {
+        "input_text": "A savings account",
+        "expected_intent": "OpenAccount",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "initialDeposit",
+        "expected_slots": { "accountType": "savings" },
+        "expected_message_fragment": "deposit"
+      },
+      {
+        "input_text": "I'll start with five hundred pounds",
+        "expected_intent": "OpenAccount",
+        "expected_slots": { "accountType": "savings", "initialDeposit": "500" },
+        "expected_dialog_state": "ConfirmIntent"
+      },
+      {
+        "input_text": "Yes, open it",
+        "expected_intent": "OpenAccount",
+        "expected_intent_state": "Fulfilled",
+        "expected_message_fragment": "opened"
+      }
+    ]
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 4: FALLBACK RECOVERY",
+    "_comment3": "Validates that after FallbackIntent the bot can recover into a valid intent."
+  },
+  {
+    "name": "FALLBACK-001 Fallback then valid intent",
+    "description": "User sends unrecognised input then follows with a valid request. Tests session continuity after fallback.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "blah blah nonsense",
+        "expected_intent": "FallbackIntent",
+        "expected_message_fragment": "understand"
+      },
+      {
+        "input_text": "Check my savings account balance",
+        "expected_intent": "CheckBalance",
+        "expected_slots": { "accountType": "savings" }
+      }
+    ]
+  },
+  {
+    "name": "FALLBACK-002 Repeated fallback escalates to agent",
+    "description": "Three consecutive unrecognised inputs; bot should escalate to live agent message after max retries.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "aaaaaaa",
+        "expected_intent": "FallbackIntent"
+      },
+      {
+        "input_text": "bbbbbbb",
+        "expected_intent": "FallbackIntent"
+      },
+      {
+        "input_text": "ccccccc",
+        "expected_intent": "FallbackIntent",
+        "expected_message_fragment": "agent"
+      }
+    ]
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 5: INTENT REDIRECTION / CHAINING",
+    "_comment3": "Validates a completed intent can immediately transition to a new intent."
+  },
+  {
+    "name": "REDIRECT-001 CheckBalance then TransferFunds (intent chaining)",
+    "description": "After checking balance the user initiates a transfer in the same session.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Check my savings balance",
+        "expected_intent": "CheckBalance",
+        "expected_slots": { "accountType": "savings" }
+      },
+      {
+        "input_text": "Now transfer one hundred pounds to my current account",
+        "expected_intent": "TransferFunds",
+        "expected_slots": { "amount": "100", "toAccount": "current" }
+      }
+    ]
+  },
+  {
+    "name": "REDIRECT-002 PayBill then Help (mid-intent topic switch)",
+    "description": "User starts paying a bill then asks for help; bot should switch to Help intent.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Pay my water bill",
+        "expected_intent": "PayBill",
+        "expected_dialog_state": "ElicitSlot"
+      },
+      {
+        "input_text": "Actually, what can you help me with?",
+        "expected_intent": "Help",
+        "expected_message_fragment": "help"
+      }
+    ]
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 6: SESSION ATTRIBUTES",
+    "_comment3": "Validates session attribute injection at call start and read-back after fulfilment."
+  },
+  {
+    "name": "SESSION-001 Pre-authenticated user – session attr present in response",
+    "description": "Injects authenticatedCustomerId as a session attribute at session start; validates it is echoed back.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "initial_session_attributes": {
+      "authenticatedCustomerId": "CUST-99887"
+    },
+    "input_text": "Check my balance",
+    "expected_intent": "CheckBalance",
+    "expected_message_fragment": "balance",
+    "expected_session_attributes": {
+      "authenticatedCustomerId": "CUST-99887"
+    }
+  },
+  {
+    "name": "SESSION-002 Session attribute persists across turns",
+    "description": "Validates that a session attribute injected at turn 1 is still present at turn 2.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "initial_session_attributes": {
+      "customerTier": "premium"
+    },
+    "turns": [
+      {
+        "input_text": "Check my balance",
+        "expected_intent": "CheckBalance",
+        "expected_session_attributes": { "customerTier": "premium" }
+      },
+      {
+        "input_text": "My current account please",
+        "expected_intent": "CheckBalance",
+        "expected_session_attributes": { "customerTier": "premium" }
+      }
+    ]
+  },
+  {
+    "name": "SESSION-003 ReportLostCard sets urgency=high session attribute",
+    "description": "Validates that the ReportLostCard Lambda hook sets urgency='high' as a session attribute after fulfilment.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "My card was stolen",
+        "expected_intent": "ReportLostCard",
+        "expected_dialog_state": "ElicitSlot"
+      },
+      {
+        "input_text": "Last four digits are 1234",
+        "expected_intent": "ReportLostCard",
+        "expected_intent_state": "Fulfilled",
+        "expected_session_attributes": { "urgency": "high" }
+      }
+    ]
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 7: SLOT VALIDATION EDGE CASES"
+  },
+  {
+    "name": "SLOT-EDGE-001 TransferFunds – amount as spelled-out words",
+    "description": "Validates that 'five thousand' is interpreted as the amount slot value '5000'.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "input_text": "Please transfer five thousand pounds to savings",
+    "expected_intent": "TransferFunds",
+    "expected_slots": {
+      "amount": "5000",
+      "toAccount": "savings"
+    }
+  },
+  {
+    "name": "SLOT-EDGE-002 CheckBalance – invalid accountType triggers re-elicitation",
+    "description": "Validates that an unrecognised account type causes Lex to re-elicit the slot.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Show me my gold account balance",
+        "expected_intent": "CheckBalance",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "accountType",
+        "expected_message_fragment": "account"
+      },
+      {
+        "input_text": "Checking account",
+        "expected_intent": "CheckBalance",
+        "expected_slots": { "accountType": "checking" }
+      }
+    ]
+  },
+  {
+    "name": "SLOT-EDGE-003 PayBill – bot re-elicits on invalid amount then accepts correction",
+    "description": "Tests that an invalid amount causes re-elicitation; valid answer on next turn should proceed.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Pay my phone bill",
+        "expected_intent": "PayBill",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "amount"
+      },
+      {
+        "input_text": "lots",
+        "expected_intent": "PayBill",
+        "expected_dialog_state": "ElicitSlot",
+        "expected_elicited_slot": "amount",
+        "expected_message_fragment": "amount"
+      },
+      {
+        "input_text": "Sixty pounds",
+        "expected_intent": "PayBill",
+        "expected_slots": { "billType": "phone", "amount": "60" }
+      }
+    ]
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 8: LOCALISATION – BRITISH ENGLISH VARIANTS",
+    "_comment3": "Run with locale_id=en_GB to test British English NLU model."
+  },
+  {
+    "name": "L10N-001 CheckBalance – en_GB locale",
+    "description": "Validates the en_GB NLU model maps a British English utterance to CheckBalance.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_GB",
+    "input_text": "Could you show me my account balance please?",
+    "expected_intent": "CheckBalance",
+    "expected_message_fragment": "balance"
+  },
+  {
+    "name": "L10N-002 TransferFunds – en_GB 'cheque account' synonym",
+    "description": "Tests that 'cheque account' (British spelling) maps to the same slot as 'checking' in en_GB.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_GB",
+    "input_text": "Transfer fifty pounds from cheque account to savings",
+    "expected_intent": "TransferFunds",
+    "expected_slots": { "amount": "50" }
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 9: CONFIRMATION FLOWS"
+  },
+  {
+    "name": "CONFIRM-001 TransferFunds – confirm Yes path",
+    "description": "One-shot utterance fills all slots; bot presents ConfirmIntent; user says Yes → Fulfilled.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Transfer three hundred dollars to checking",
+        "expected_intent": "TransferFunds",
+        "expected_dialog_state": "ConfirmIntent",
+        "expected_slots": { "amount": "300", "toAccount": "checking" },
+        "expected_message_fragment": "confirm"
+      },
+      {
+        "input_text": "Yes",
+        "expected_intent": "TransferFunds",
+        "expected_intent_state": "Fulfilled",
+        "expected_message_fragment": "transfer"
+      }
+    ]
+  },
+  {
+    "name": "CONFIRM-002 TransferFunds – confirm No path",
+    "description": "Validates that the user can cancel at the ConfirmIntent step → Failed.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Transfer fifty dollars to savings",
+        "expected_intent": "TransferFunds",
+        "expected_dialog_state": "ConfirmIntent"
+      },
+      {
+        "input_text": "No, don't do that",
+        "expected_intent": "TransferFunds",
+        "expected_intent_state": "Failed",
+        "expected_message_fragment": "cancel"
+      }
+    ]
+  },
+  {
+    "name": "CONFIRM-003 OpenAccount – ambiguous confirm re-elicits yes/no",
+    "description": "User provides an ambiguous response at ConfirmIntent; bot should re-ask for explicit yes or no.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Open a current account with one thousand pounds",
+        "expected_intent": "OpenAccount",
+        "expected_dialog_state": "ConfirmIntent"
+      },
+      {
+        "input_text": "Um, maybe",
+        "expected_intent": "OpenAccount",
+        "expected_dialog_state": "ConfirmIntent",
+        "expected_message_fragment": "yes or no"
+      },
+      {
+        "input_text": "Yes",
+        "expected_intent": "OpenAccount",
+        "expected_intent_state": "Fulfilled"
+      }
+    ]
+  },
+
+  {
+    "_comment":  "=================================================================",
+    "_comment2": "SECTION 10: ACTIVE CONTEXTS",
+    "_comment3": "Validates Lex active context names set after intent fulfilment."
+  },
+  {
+    "name": "CONTEXT-001 CheckBalance sets PostBalanceContext",
+    "description": "Validates that after CheckBalance is fulfilled the 'PostBalanceContext' active context is present.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "What is my savings account balance?",
+        "expected_intent": "CheckBalance",
+        "expected_slots": { "accountType": "savings" },
+        "expected_active_contexts": ["PostBalanceContext"]
+      }
+    ]
+  },
+  {
+    "name": "CONTEXT-002 PostBalanceContext enables quick transfer follow-up",
+    "description": "With PostBalanceContext active after CheckBalance, a brief transfer utterance is understood in context.",
+    "bot_id": "REPLACE_WITH_BOT_ID",
+    "bot_alias_id": "REPLACE_WITH_BOT_ALIAS_ID",
+    "locale_id": "en_US",
+    "turns": [
+      {
+        "input_text": "Check my savings balance",
+        "expected_intent": "CheckBalance",
+        "expected_active_contexts": ["PostBalanceContext"]
+      },
+      {
+        "input_text": "Transfer two hundred to current",
+        "expected_intent": "TransferFunds",
+        "expected_slots": { "amount": "200", "toAccount": "current" }
+      }
+    ]
+  }
+]
