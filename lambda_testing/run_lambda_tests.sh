@@ -69,12 +69,20 @@ echo ""
 # ---------------------------------------------------------------------------
 EXTRA_ARGS="${PYTEST_ARGS:-}"
 
+# Add --html flag only if pytest-html is installed
+HTML_ARGS=""
+if python3 -c "import pytest_html" 2>/dev/null; then
+  HTML_ARGS="--html=${REPORT_DIR}/lambda_test_report.html --self-contained-html"
+else
+  echo "[warn] pytest-html not installed – skipping HTML report. Run: pip install pytest-html"
+fi
+
 cd "${SCRIPT_DIR}"
+# shellcheck disable=SC2086
 pytest \
   -s -v \
   --tb=short \
-  --html="${REPORT_DIR}/lambda_test_report.html" \
-  --self-contained-html \
+  ${HTML_ARGS} \
   test_lambda_localstack.py \
   ${EXTRA_ARGS}
 
