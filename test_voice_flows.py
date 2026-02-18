@@ -75,9 +75,13 @@ def setup_infrastructure():
         import sys
         deploy_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deploy_infrastructure.py')
         env = os.environ.copy()
-        env['AWS_REGION']          = CHIME_REGION
-        env['ENV_NAME']            = ENV_NAME
-        env['DYNAMODB_TABLE_NAME'] = DYNAMODB_TABLE_NAME
+        env['AWS_REGION']             = CHIME_REGION
+        env['ENV_NAME']                = ENV_NAME
+        env['DYNAMODB_TABLE_NAME']     = DYNAMODB_TABLE_NAME
+        env['CONNECT_REGION']          = CONNECT_REGION
+        env['CONNECT_INSTANCE_ALIAS']  = CONNECT_INSTANCE_ALIAS
+        if CHIME_RECORDING_BUCKET:
+            env['CHIME_RECORDING_BUCKET'] = CHIME_RECORDING_BUCKET
 
         result = subprocess.run(
             [sys.executable, deploy_script],
@@ -94,12 +98,20 @@ def setup_infrastructure():
             with open(output_file, 'r') as f:
                 infra = json.load(f)
             global CHIME_PHONE_NUMBER, CHIME_SMA_ID  # noqa: PLW0603
-            CHIME_PHONE_NUMBER  = infra.get('CHIME_PHONE_NUMBER', CHIME_PHONE_NUMBER)
-            CHIME_SMA_ID        = infra.get('CHIME_SMA_ID', CHIME_SMA_ID)
-            # DYNAMODB_TABLE_NAME is a module-level var — update via os.environ side-channel
+            CHIME_PHONE_NUMBER       = infra.get('CHIME_PHONE_NUMBER',     CHIME_PHONE_NUMBER)
+            CHIME_SMA_ID             = infra.get('CHIME_SMA_ID',           CHIME_SMA_ID)
+            # Propagate new infra outputs back into os.environ so module-level
+            # constants (read at import time) are refreshed for this session.
             _tbl = infra.get('DYNAMODB_TABLE', DYNAMODB_TABLE_NAME)
             os.environ['DYNAMODB_TABLE_NAME'] = _tbl
+            _cwl = infra.get('CONNECT_FLOW_LOG_GROUP', CONNECT_FLOW_LOG_GROUP)
+            if _cwl:
+                os.environ['CONNECT_FLOW_LOG_GROUP'] = _cwl
+            _bucket = infra.get('CHIME_RECORDING_BUCKET', CHIME_RECORDING_BUCKET)
+            if _bucket:
+                os.environ['CHIME_RECORDING_BUCKET'] = _bucket
             print(f"[SETUP] SMA={CHIME_SMA_ID}  Phone={CHIME_PHONE_NUMBER}  Table={_tbl}")
+            print(f"[SETUP] CWL log group='{_cwl}'  Recording bucket='{_bucket}'")
         else:
             print("[SETUP] WARNING: infrastructure_output.json not found — using defaults.")
     except Exception as e:

@@ -10,9 +10,19 @@ from botocore.exceptions import ClientError
 # Configuration
 # FIX: ENV_NAME namespaces all resource names so dev/test/prod are isolated.
 # ---------------------------------------------------------------------------
-ENV_NAME            = os.environ.get('ENV_NAME', 'dev')
-DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', f'VoiceTestState-{ENV_NAME}')
-AWS_REGION          = os.environ.get('CHIME_AWS_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+ENV_NAME             = os.environ.get('ENV_NAME', 'dev')
+DYNAMODB_TABLE_NAME  = os.environ.get('DYNAMODB_TABLE_NAME', f'VoiceTestState-{ENV_NAME}')
+# CHIME_AWS_REGION: region where Chime SMA, Lambda, and DynamoDB live (us-east-1)
+AWS_REGION           = os.environ.get('CHIME_AWS_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+# CONNECT_REGION: region where Amazon Connect instance lives (e.g. eu-west-2)
+# CloudWatch Logs for Connect flow execution logs are written to this region.
+CONNECT_REGION       = os.environ.get('CONNECT_REGION', 'eu-west-2')
+# CONNECT_INSTANCE_ALIAS: used to build the CloudWatch log group name
+# /aws/connect/<alias>  (enable via Admin > Data storage > Contact flow logs)
+CONNECT_INSTANCE_ALIAS = os.environ.get('CONNECT_INSTANCE_ALIAS', '')
+# CHIME_RECORDING_BUCKET: S3 bucket where Chime SMA stores call recordings
+# Required for the Amazon Transcribe fallback assertion track.
+CHIME_RECORDING_BUCKET = os.environ.get('CHIME_RECORDING_BUCKET', '')
 LAMBDA_FUNCTION_NAME = f'ChimeSMAHandler-{ENV_NAME}'
 SMA_NAME             = f'ChimeAutomationSMA-{ENV_NAME}'
 IAM_ROLE_NAME        = f'ChimeTestLambdaRole-{ENV_NAME}'
@@ -84,10 +94,17 @@ def get_or_create_iam_role(iam, account_id: str, table_arn: str):
             RoleName=IAM_ROLE_NAME,
             PolicyArn='arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
         )
-        # FIX: Resource-scoped inline DynamoDB policy (replaces AmazonDynamoDBFullAccess)
+        # ----------------------------------------------------------------
+        # Inline policy 1: DynamoDB — scoped to the test state table only
+        # FIX: Replaces AmazonDynamoDBFullAccess with least-privilege access.
+        # ----------------------------------------------------------------
+        _ddb_arn = table_arn if table_arn else (
+            f"arn:aws:dynamodb:{AWS_REGION}:{account_id}:table/{DYNAMODB_TABLE_NAME}"
+        )
         scoped_dynamodb_policy = {
             "Version": "2012-10-17",
             "Statement": [{
+                "Sid":      "ChimeTestDynamoDB",
                 "Effect":   "Allow",
                 "Action":   [
                     "dynamodb:GetItem",
@@ -96,7 +113,7 @@ def get_or_create_iam_role(iam, account_id: str, table_arn: str):
                     "dynamodb:DeleteItem",
                     "dynamodb:DescribeTable"
                 ],
-                "Resource": table_arn if table_arn else f"arn:aws:dynamodb:{AWS_REGION}:{account_id}:table/{DYNAMODB_TABLE_NAME}"
+                "Resource": _ddb_arn
             }]
         }
         iam.put_role_policy(
@@ -104,6 +121,106 @@ def get_or_create_iam_role(iam, account_id: str, table_arn: str):
             PolicyName='ChimeTestLambdaDynamoDBPolicy',
             PolicyDocument=json.dumps(scoped_dynamodb_policy)
         )
+        print("  Added inline policy: ChimeTestLambdaDynamoDBPolicy")
+
+        # ----------------------------------------------------------------
+        # Inline policy 2: CloudWatch Logs Insights
+        # Required for query_contact_flow_logs() — reads Connect contact
+        # flow execution logs from /aws/connect/<alias> in CONNECT_REGION.
+        # ----------------------------------------------------------------
+        _cwl_log_group_arn = (
+            f"arn:aws:logs:{CONNECT_REGION}:{account_id}:log-group:/aws/connect/*"
+        )
+        cwl_policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Sid":    "ChimeTestCWLInsights",
+                "Effect": "Allow",
+                "Action": [
+                    "logs:StartQuery",
+                    "logs:GetQueryResults",
+                    "logs:StopQuery",
+                    # describe permission lets code verify the log group exists
+                    "logs:DescribeLogGroups"
+                ],
+                "Resource": [
+                    _cwl_log_group_arn,
+                    # Insights also needs the log-group:* wildcard at account level
+                    # for the query engine itself
+                    f"arn:aws:logs:{CONNECT_REGION}:{account_id}:log-group:*"
+                ]
+            }]
+        }
+        iam.put_role_policy(
+            RoleName=IAM_ROLE_NAME,
+            PolicyName='ChimeTestLambdaCWLInsightsPolicy',
+            PolicyDocument=json.dumps(cwl_policy)
+        )
+        print("  Added inline policy: ChimeTestLambdaCWLInsightsPolicy")
+
+        # ----------------------------------------------------------------
+        # Inline policy 3: Amazon Transcribe
+        # Required for transcribe_chime_audio() — submits transcription
+        # jobs against Chime-recorded call audio.
+        # ----------------------------------------------------------------
+        transcribe_policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Sid":    "ChimeTestTranscribe",
+                "Effect": "Allow",
+                "Action": [
+                    "transcribe:StartTranscriptionJob",
+                    "transcribe:GetTranscriptionJob",
+                    "transcribe:DeleteTranscriptionJob"
+                ],
+                # Transcribe IAM resources are always '*'; jobs are identified
+                # by name in API calls, not by ARN in policy conditions.
+                "Resource": "*"
+            }]
+        }
+        iam.put_role_policy(
+            RoleName=IAM_ROLE_NAME,
+            PolicyName='ChimeTestLambdaTranscribePolicy',
+            PolicyDocument=json.dumps(transcribe_policy)
+        )
+        print("  Added inline policy: ChimeTestLambdaTranscribePolicy")
+
+        # ----------------------------------------------------------------
+        # Inline policy 4: S3 — Chime recording bucket
+        # Transcribe reads the .wav from S3; Transcribe also writes its
+        # JSON result back to S3 (default output bucket = same bucket).
+        # Only added when CHIME_RECORDING_BUCKET is configured.
+        # ----------------------------------------------------------------
+        if CHIME_RECORDING_BUCKET:
+            s3_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid":    "ChimeTestS3RecordingRead",
+                        "Effect": "Allow",
+                        "Action": ["s3:GetObject", "s3:ListBucket"],
+                        "Resource": [
+                            f"arn:aws:s3:::{CHIME_RECORDING_BUCKET}",
+                            f"arn:aws:s3:::{CHIME_RECORDING_BUCKET}/*"
+                        ]
+                    },
+                    {
+                        "Sid":    "ChimeTestS3TranscribeWrite",
+                        "Effect": "Allow",
+                        "Action": ["s3:PutObject"],
+                        "Resource": f"arn:aws:s3:::{CHIME_RECORDING_BUCKET}/*"
+                    }
+                ]
+            }
+            iam.put_role_policy(
+                RoleName=IAM_ROLE_NAME,
+                PolicyName='ChimeTestLambdaS3RecordingPolicy',
+                PolicyDocument=json.dumps(s3_policy)
+            )
+            print(f"  Added inline policy: ChimeTestLambdaS3RecordingPolicy (bucket: {CHIME_RECORDING_BUCKET})")
+        else:
+            print("  Skipped S3 recording policy: CHIME_RECORDING_BUCKET not set.")
+
         time.sleep(10)   # Allow IAM propagation
         return role['Role']['Arn']
 
@@ -302,11 +419,17 @@ def deploy():
         create_sip_rule(chime, sma_id, phone)
 
     output = {
-        'CHIME_SMA_ID':        sma_id,
-        'CHIME_PHONE_NUMBER':  phone,
-        'LAMBDA_ARN':          lambda_arn,
-        'DYNAMODB_TABLE':      DYNAMODB_TABLE_NAME,
-        'ENV_NAME':            ENV_NAME,
+        'CHIME_SMA_ID':            sma_id,
+        'CHIME_PHONE_NUMBER':      phone,
+        'LAMBDA_ARN':              lambda_arn,
+        'DYNAMODB_TABLE':          DYNAMODB_TABLE_NAME,
+        'ENV_NAME':                ENV_NAME,
+        'CONNECT_REGION':          CONNECT_REGION,
+        'CONNECT_INSTANCE_ALIAS':  CONNECT_INSTANCE_ALIAS,
+        'CHIME_RECORDING_BUCKET':  CHIME_RECORDING_BUCKET,
+        'CONNECT_FLOW_LOG_GROUP':  (
+            f'/aws/connect/{CONNECT_INSTANCE_ALIAS}' if CONNECT_INSTANCE_ALIAS else ''
+        ),
     }
     with open('infrastructure_output.json', 'w') as f:
         json.dump(output, f, indent=2)
