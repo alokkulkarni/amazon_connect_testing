@@ -125,8 +125,22 @@ def lambda_handler(event, context):
             }
 
     # 2. CALL_ANSWERED: Start the conversation
+    # If the DynamoDB item carries pre_set_attributes (from test case), inject them
+    # into the contact via a Speak action placeholder so Connect sets them via a
+    # contact attribute update invocation.  In practice the test framework uses
+    # the Connect API directly — we surface them here per the conversation_item.
     elif event_type == 'CALL_ANSWERED':
         print(f"Call Answered. Starting conversation at step {current_step_index}")
+        # Pre-set attributes: stored in DynamoDB by the test seeder
+        # The Lambda surfaces them in TransactionAttributes so they can be monitored.
+        pre_set_raw = conversation_item.get('pre_set_attributes')
+        if pre_set_raw:
+            try:
+                pre_attrs = json.loads(pre_set_raw) if isinstance(pre_set_raw, str) else pre_set_raw
+                transaction_attributes.update({f"pre_{k}": v for k, v in pre_attrs.items()})
+                print(f"pre_set_attributes forwarded to TransactionAttributes: {pre_attrs}")
+            except Exception as pa_err:
+                print(f"Warning: could not parse pre_set_attributes: {pa_err}")
         # Execute the current step (usually 0)
         actions = execute_step(script, current_step_index, participants)
         new_status = 'IN_PROGRESS'

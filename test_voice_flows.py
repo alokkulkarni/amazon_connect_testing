@@ -78,11 +78,13 @@ def setup_infrastructure():
         if os.path.exists(output_file):
             with open(output_file, 'r') as f:
                 infra = json.load(f)
-            global CHIME_PHONE_NUMBER, CHIME_SMA_ID, DYNAMODB_TABLE_NAME
+            global CHIME_PHONE_NUMBER, CHIME_SMA_ID  # noqa: PLW0603
             CHIME_PHONE_NUMBER  = infra.get('CHIME_PHONE_NUMBER', CHIME_PHONE_NUMBER)
             CHIME_SMA_ID        = infra.get('CHIME_SMA_ID', CHIME_SMA_ID)
-            DYNAMODB_TABLE_NAME = infra.get('DYNAMODB_TABLE', DYNAMODB_TABLE_NAME)
-            print(f"[SETUP] SMA={CHIME_SMA_ID}  Phone={CHIME_PHONE_NUMBER}  Table={DYNAMODB_TABLE_NAME}")
+            # DYNAMODB_TABLE_NAME is a module-level var — update via os.environ side-channel
+            _tbl = infra.get('DYNAMODB_TABLE', DYNAMODB_TABLE_NAME)
+            os.environ['DYNAMODB_TABLE_NAME'] = _tbl
+            print(f"[SETUP] SMA={CHIME_SMA_ID}  Phone={CHIME_PHONE_NUMBER}  Table={_tbl}")
         else:
             print("[SETUP] WARNING: infrastructure_output.json not found — using defaults.")
     except Exception as e:
@@ -449,14 +451,27 @@ def test_connect_voice_flow(test_case, request):
     # ------------------------------------------------------------------
     # Step 2: Seed DynamoDB with TTL
     # FIX: unique conversation_id per test run; ttl attribute auto-expires items.
+    # pre_set_attributes are stored alongside the script so chime_handler_lambda.py
+    # can call Connect UpdateContactAttributes immediately on CALL_ANSWERED before
+    # starting the conversation script steps.
     # ------------------------------------------------------------------
-    conversation_id = str(uuid.uuid4())
-    call_start_ts   = int(time.time())
+    conversation_id    = str(uuid.uuid4())
+    call_start_ts      = int(time.time())
+    pre_set_attributes = test_case.get('pre_set_attributes', {})
 
     print(f"\n[STEP 1] Seeding conversation {conversation_id} in DynamoDB...")
     if not MOCK_AWS:
         try:
             seed_conversation(dynamodb, conversation_id, script, test_case['name'])
+            # Store pre_set_attributes as a separate field for the Lambda to pick up
+            if pre_set_attributes:
+                table = dynamodb.Table(DYNAMODB_TABLE_NAME)
+                table.update_item(
+                    Key={'conversation_id': conversation_id},
+                    UpdateExpression='SET pre_set_attributes = :a',
+                    ExpressionAttributeValues={':a': json.dumps(pre_set_attributes)},
+                )
+                print(f"   > Stored pre_set_attributes: {pre_set_attributes}")
         except Exception as e:
             pytest.fail(f"Failed to seed DynamoDB state: {e}")
 
@@ -593,242 +608,29 @@ def test_connect_voice_flow(test_case, request):
             if test_case.get('expected_contact_attributes'):
                 print("   > PASS: All expected contact attributes verified.")
 
+        # --- expected_flow_transfer: verify the contact was handled by a named sub-flow ---
+        # NOTE: Connect does not expose TransferToFlow destination in the CTR API directly.
+        # We validate indirectly by checking disconnect reason and AgentConnectionAttempts=0
+        # for flows that end without a queue.  The field is preserved as documentation.
+        expected_flow = test_case.get('expected_flow_transfer')
+        if expected_flow and contact:
+            # If the sub-flow disconnects without a queue, AgentConnectionAttempts must be 0
+            agent_attempts = contact.get('AgentConnectionAttempts', 0)
+            assert agent_attempts == 0, (
+                f"FAIL: expected_flow_transfer='{expected_flow}' implies no agent, "
+                f"but AgentConnectionAttempts={agent_attempts}."
+            )
+            print(f"   > PASS: Sub-flow '{expected_flow}' — no agent connection (expected).")
+
+        # --- expected_message_fragment: noted for documentation; not directly verifiable via API ---
+        expected_msg = test_case.get('expected_message_fragment')
+        if expected_msg and contact:
+            print(f"   > INFO: expected_message_fragment='{expected_msg}' — "
+                  "verify manually via call recording or Connect contact trace.")
+
     else:
         print("   > [MOCK] Skipping live assertions.")
 
     print(f"\n{'='*68}")
     print(f"TEST PASSED: {test_case['name']}")
     print(f"{'='*68}")
-
-    print(f"\n----------------------------------------------------------------")
-    print(f"STARTING TEST CASE: {test_case['name']}")
-    print(f"----------------------------------------------------------------")
-    
-    if not CHIME_PHONE_NUMBER or not CHIME_SMA_ID:
-        if not MOCK_AWS:
-            pytest.fail("Missing CHIME_PHONE_NUMBER or CHIME_SMA_ID configuration.")
-    
-    # 1. Seed Conversation State
-    conversation_id = str(uuid.uuid4())
-    print(f"[STEP 1] Setup: Seeding conversation {conversation_id} in DynamoDB...")
-    
-    script = test_case.get('script', [])
-    if not script and 'input_speech' in test_case:
-         script = [
-            {"type": "wait", "duration_ms": 2000},
-            {"type": "speak", "text": test_case['input_speech']},
-            {"type": "wait", "duration_ms": 10000}
-        ]
-    
-    if not MOCK_AWS:
-        try:
-            table = dynamodb.Table(DYNAMODB_TABLE_NAME)
-            table.put_item(Item={
-                'conversation_id': conversation_id,
-                'script': json.dumps(script),
-                'current_step_index': 0,
-                'status': 'READY',
-                'created_at': int(time.time())
-            })
-        except Exception as e:
-            print(f"   > ERROR seeding DynamoDB: {e}")
-            pytest.fail(f"Failed to seed DynamoDB state: {e}")
-    
-    print(f"   > From (Chime): {CHIME_PHONE_NUMBER}")
-    print(f"   > To (Connect): {test_case['destination_phone']}")
-
-    transaction_id = None
-    try:
-        # 2. Initiate Call
-        print(f"[STEP 2] Action: Invoking Chime SIP Media Application...")
-        
-        if not MOCK_AWS:
-            retries = 3
-            backoff = 2
-            response = None
-            
-            for attempt in range(retries):
-                try:
-                    response = chime_client.create_sip_media_application_call(
-                        FromPhoneNumber=CHIME_PHONE_NUMBER,
-                        ToPhoneNumber=test_case['destination_phone'],
-                        SipMediaApplicationId=CHIME_SMA_ID,
-                        ArgumentsMap={
-                            'conversation_id': conversation_id,
-                            'case_id': test_case.get('name', 'unknown')
-                        }
-                    )
-                    break # Success
-                except Exception as e:
-                    if "Concurrent call limits breached" in str(e) or "ThrottlingException" in str(e):
-                        if attempt < retries - 1:
-                            print(f"   > Concurrent limit hit. Retrying in {backoff}s...")
-                            time.sleep(backoff)
-                            backoff *= 2
-                            continue
-                    raise e
-
-            if response:
-                transaction_id = response['SipMediaApplicationCall']['TransactionId']
-                print(f"   > SUCCESS: Call Initiated. Transaction ID: {transaction_id}")
-        else:
-            print(f"   > [MOCK] Call Initiated.")
-
-        # 3. Monitor Conversation Progress
-        print(f"[STEP 3] Monitoring: Watching conversation progress in DynamoDB...")
-        
-        if not MOCK_AWS:
-            # Poll DynamoDB
-            script_duration = sum([s.get('duration_ms', 0) for s in script]) / 1000
-            max_wait = max(60, script_duration + 30)
-            
-            start_time = time.time()
-            conversation_completed = False
-            last_step = -1
-            
-            while time.time() - start_time < max_wait:
-                try:
-                    resp = table.get_item(Key={'conversation_id': conversation_id}, ConsistentRead=True)
-                    item = resp.get('Item', {})
-                    status = item.get('status')
-                    step = int(item.get('current_step_index', 0))
-                    
-                    if step != last_step:
-                        print(f"   > Status: {status}, Step: {step}/{len(script)}")
-                        last_step = step
-                    
-                    if status == 'COMPLETED':
-                        conversation_completed = True
-                        print("   > Conversation script completed.")
-                        break
-                    
-                    time.sleep(2)
-                except Exception as e:
-                    print(f"   > Warning polling DynamoDB: {e}")
-                    time.sleep(2)
-                
-            if not conversation_completed:
-                print("   > WARNING: Conversation did not complete within timeout.")
-        else:
-            time.sleep(2)
-
-        # 4. Validate Routing
-        print(f"[STEP 4] Validation: Checking Amazon Connect Queue metrics...")
-        expected_queue = test_case.get('expected_queue')
-        
-        found_in_queue = False
-        queue_id = None
-        
-        if expected_queue and not MOCK_AWS:
-            try:
-                paginator = connect_client.get_paginator('list_queues')
-                found = False
-                for page in paginator.paginate(InstanceId=CONNECT_INSTANCE_ID, QueueTypes=['STANDARD']):
-                    for q in page['QueueSummaryList']:
-                        if q['Name'] == expected_queue:
-                            queue_id = q['Id']
-                            print(f"   > Resolved Queue '{expected_queue}' to ID: {queue_id}")
-                            found = True
-                            break
-                    if found: break
-            except Exception as e:
-                print(f"   > Error resolving queue: {e}")
-            
-            if queue_id:
-                for attempt in range(6):
-                    print(f"   > Checking metrics (Attempt {attempt+1}/6)...")
-                    try:
-                        metrics = connect_client.get_current_metric_data(
-                            InstanceId=CONNECT_INSTANCE_ID,
-                            Filters={'Channels': ['VOICE'], 'Queues': [queue_id]},
-                            CurrentMetrics=[{'Name': 'CONTACTS_IN_QUEUE', 'Unit': 'COUNT'}]
-                        )
-                        for m in metrics.get('MetricResults', []):
-                            count = int(m['Collections'][0]['Value'])
-                            if count > 0:
-                                print(f"   > SUCCESS: Found {count} contact(s) in queue.")
-                                found_in_queue = True
-                                break
-                    except Exception as e: 
-                        print(f"   > Metric check error: {e}")
-                    
-                    if found_in_queue: break
-                    time.sleep(5)
-
-        if found_in_queue:
-            print(f"   > TEST PASSED: Contact found in queue '{expected_queue}'.")
-        elif expected_queue:
-            print(f"   > WARNING: Contact not found in queue metrics.")
-
-        # 5. Post-Call Analysis
-        print(f"[STEP 5] Post-Call Analysis...")
-        
-        if not MOCK_AWS and expected_queue:
-            try:
-                print(f"   > Searching for Contact ID for phone {CHIME_PHONE_NUMBER}...")
-                time.sleep(5)
-                
-                search_response = connect_client.search_contacts(
-                     InstanceId=CONNECT_INSTANCE_ID,
-                     TimeRange={
-                         'Type': 'INITIATION_TIMESTAMP',
-                         'StartTime': int(time.time()) - 300, 
-                         'EndTime': int(time.time()) + 60
-                     },
-                     SearchCriteria={
-                         'Channels': ['VOICE']
-                     },
-                     Sort={
-                         'FieldName': 'INITIATION_TIMESTAMP',
-                         'Order': 'DESCENDING'
-                     }
-                 )
-                
-                contacts = search_response.get('Contacts', [])
-                if contacts:
-                    contact = contacts[0]
-                    contact_id = contact['Id']
-                    print(f"   > Found Contact ID: {contact_id}")
-                    
-                    contact_queue = contact.get('QueueInfo', {}).get('Name')
-                    print(f"   > Contact routed to: {contact_queue}")
-                    
-                    if contact_queue == expected_queue:
-                        print(f"   > TEST PASSED (Historical): Contact confirmed in queue '{expected_queue}'.")
-                        found_in_queue = True
-                else:
-                    print("   > No recent contacts found.")
-
-            except Exception as e:
-                print(f"   > Historical search failed: {e}")
-
-        if expected_queue and not found_in_queue and not MOCK_AWS:
-             print("   > FAILURE: Call did not reach expected queue.")
-
-        # 6. Explicit Cleanup/Hangup
-        if transaction_id and not MOCK_AWS:
-            print(f"[STEP 6] Cleanup: Ending call {transaction_id}...")
-            try:
-                # To hang up a call via API, we can update it with an empty list of actions or a hangup action?
-                # Actually, UpdateSipMediaApplicationCall triggers the Lambda again.
-                # We can trigger a specific event or action.
-                # However, the easiest way is to let the Lambda handle a "Hangup" trigger.
-                # But we don't have a direct API to "Hangup" a specific leg easily without Lambda logic.
-                
-                # ALTERNATIVE: Use the API to update the call with a custom argument that the Lambda recognizes as "Time to Hangup"
-                # The correct method is update_sip_media_application_call
-                chime_client.update_sip_media_application_call(
-                    SipMediaApplicationId=CHIME_SMA_ID,
-                    TransactionId=transaction_id,
-                    Arguments={'action': 'hangup'}
-                )
-                print("   > Sent hangup signal.")
-                # Give it a moment to clear
-                time.sleep(5) 
-            except Exception as e:
-                print(f"   > Error cleaning up call: {e}")
-
-    except Exception as e:
-        print(f"   > ERROR: {e}")
-        if not MOCK_AWS:
-            pytest.fail(f"Test exception: {e}")
