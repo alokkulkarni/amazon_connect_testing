@@ -1,88 +1,210 @@
 [
   {
     "name": "Voice - Happy Path (Open Hours)",
-    "description": "Validates that a voice call during operating hours is successfully routed to the BasicQueue.",
+    "description": "Validates that a voice call during operating hours is successfully routed to BasicQueue.",
     "destination_phone": "+442046324431",
     "script": [
-      {
-        "type": "speak",
-        "text": "Hello, I am calling to test the open hours flow.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 5000
-      },
-      {
-        "type": "speak",
-        "text": "I am waiting to be connected to an agent.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 10000
-      }
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "speak", "text": "Hello, I am calling to test the open hours routing.", "duration_ms": 3000 },
+      { "type": "wait",  "duration_ms": 10000 }
     ],
     "expected_queue": "BasicQueue",
     "expected_behavior": "call_queued",
-    "attributes": {
-      "intent": "connect_queue"
-    }
+    "expected_contact_attributes": { "intent": "connect_queue" },
+    "attributes": { "intent": "connect_queue" }
   },
   {
     "name": "Voice - Closed Hours (Simulated)",
-    "description": "Validates that a voice call outside operating hours plays a message and disconnects. (Note: Requires manually closing hours or simulation)",
+    "description": "Validates that a call outside operating hours plays a message and disconnects without reaching an agent. Requires hours_of_operation_id to be set.",
     "destination_phone": "+442046324431",
+    "setup": {
+      "simulate_closed_hours": true,
+      "hours_of_operation_id": "__REPLACE_WITH_HOURS_OF_OPERATION_ID__"
+    },
     "script": [
-      {
-        "type": "speak",
-        "text": "Calling out of hours.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 5000
-      }
+      { "type": "wait",  "duration_ms": 3000 },
+      { "type": "speak", "text": "Calling outside of business hours.", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 5000 }
     ],
     "expected_queue": null,
     "expected_behavior": "disconnect_with_message",
-    "expected_message_fragment": "We are not able to take your call right now",
-    "attributes": {
-      "intent": "check_hours"
-    }
+    "expected_message_fragment": "We are not able to take your call right now"
   },
   {
-    "name": "Voice - Multi-Turn Menu Navigation",
-    "description": "Navigates the main menu by selecting option 1 to enter the queue flow.",
+    "name": "Voice - DTMF Menu Option 1 (Queue)",
+    "description": "Navigates the main IVR menu by pressing 1 to enter the main queue flow.",
     "destination_phone": "+442046324431",
     "script": [
-      {
-        "type": "wait",
-        "duration_ms": 8000
-      },
-      {
-        "type": "dtmf",
-        "digits": "1",
-        "duration_ms": 1000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 5000
-      },
-      {
-        "type": "speak",
-        "text": "I am waiting for an agent.",
-        "duration_ms": 2000
-      },
-      {
-        "type": "wait",
-        "duration_ms": 10000
-      }
+      { "type": "wait",  "duration_ms": 8000 },
+      { "type": "dtmf",  "digits": "1", "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "speak", "text": "I am waiting for an agent.", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 10000 }
     ],
     "expected_queue": "BasicQueue",
     "expected_behavior": "call_queued",
-    "attributes": {
-      "intent": "connect_queue"
-    }
+    "attributes": { "intent": "connect_queue" }
+  },
+  {
+    "name": "Voice - DTMF Menu Option 2 (Specialist Queue)",
+    "description": "Navigates the main IVR menu by pressing 2 to route to the specialist/overflow queue.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 8000 },
+      { "type": "dtmf",  "digits": "2", "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "speak", "text": "I need specialist support.", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 10000 }
+    ],
+    "expected_queue": "SpecialistQueue",
+    "expected_behavior": "call_queued",
+    "attributes": { "intent": "specialist_support" }
+  },
+  {
+    "name": "Voice - Lex NLU Intent (Account Balance)",
+    "description": "Speaks an intent phrase that should be recognised by the embedded Lex bot in Connect and route to the accounts queue.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "speak", "text": "I would like to check my account balance please.", "duration_ms": 4000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "AccountsQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "lex_intent": "CheckBalance" },
+    "attributes": { "intent": "check_balance" }
+  },
+  {
+    "name": "Voice - Lex NLU Intent (Report Lost Card)",
+    "description": "Speaks an intent that should trigger the lost card emergency routing flow.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "speak", "text": "I need to report my card as lost.", "duration_ms": 4000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "UrgentQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "lex_intent": "ReportLostCard" },
+    "attributes": { "intent": "report_lost_card" }
+  },
+  {
+    "name": "Voice - DTMF Authentication (Valid Account Number)",
+    "description": "Waits for the authentication prompt and enters a valid 8-digit account number via DTMF.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "dtmf",  "digits": "12345678", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "speak", "text": "Authenticated.", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "AuthenticatedQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "authenticated": "true" },
+    "attributes": { "intent": "authenticated_service" }
+  },
+  {
+    "name": "Voice - DTMF Authentication (Invalid Account Number Reprompt)",
+    "description": "Enters an incorrect account number; flow should reprompt and eventually route to verification fallback queue.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "dtmf",  "digits": "00000000", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "dtmf",  "digits": "00000000", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "dtmf",  "digits": "00000000", "duration_ms": 2000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "VerificationFallbackQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "authenticated": "false" },
+    "attributes": { "intent": "failed_authentication" }
+  },
+  {
+    "name": "Voice - Transfer to Supervisor / Escalation",
+    "description": "Caller requests escalation to a supervisor; flow should transfer to SupervisorQueue.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "speak", "text": "I would like to speak with a supervisor please.", "duration_ms": 4000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "SupervisorQueue",
+    "expected_transfer_queue": "SupervisorQueue",
+    "expected_behavior": "call_queued",
+    "attributes": { "intent": "escalate_supervisor" }
+  },
+  {
+    "name": "Voice - Callback Request",
+    "description": "Caller opts for a callback rather than waiting in queue; flow should acknowledge and disconnect.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 8000 },
+      { "type": "dtmf",  "digits": "9", "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 6000 }
+    ],
+    "expected_queue": null,
+    "expected_behavior": "disconnect_with_message",
+    "expected_contact_attributes": { "callback_requested": "true" },
+    "attributes": { "intent": "request_callback" }
+  },
+  {
+    "name": "Voice - Long Wait Abandonment Path",
+    "description": "Simulates a caller who waits significantly in queue then hangs up; validates that the flow does not error and the call record is correctly captured.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "dtmf",  "digits": "1", "duration_ms": 1000 },
+      { "type": "wait",  "duration_ms": 30000 }
+    ],
+    "expected_queue": "BasicQueue",
+    "expected_behavior": "call_queued",
+    "attributes": { "intent": "connect_queue" }
+  },
+  {
+    "name": "Voice - DNIS-Based Routing (Secondary Number)",
+    "description": "Calls a second claimed number; validates that DNIS-based contact flow routing sends the call to a different queue than the primary number.",
+    "destination_phone": "+442046324432",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "speak", "text": "Calling the secondary service number.", "duration_ms": 3000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "SecondaryQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "dnis_route": "secondary" },
+    "attributes": { "intent": "secondary_service" }
+  },
+  {
+    "name": "Voice - Multi-Turn Lex Slot Filling",
+    "description": "Simulates a multi-turn Lex conversation requiring slot filling (date of birth). The virtual customer provides the date in response to a prompt.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "speak", "text": "I want to make a payment.", "duration_ms": 3000 },
+      { "type": "wait",  "duration_ms": 6000 },
+      { "type": "speak", "text": "January the first nineteen ninety.", "duration_ms": 4000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "PaymentsQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "lex_intent": "MakePayment", "dob_provided": "true" },
+    "attributes": { "intent": "make_payment" }
+  },
+  {
+    "name": "Voice - Emergency / Critical Routing",
+    "description": "A caller uses an emergency keyword; the flow should bypass normal queues and route to a priority emergency queue immediately.",
+    "destination_phone": "+442046324431",
+    "script": [
+      { "type": "wait",  "duration_ms": 5000 },
+      { "type": "speak", "text": "This is an emergency, I need immediate help.", "duration_ms": 4000 },
+      { "type": "wait",  "duration_ms": 8000 }
+    ],
+    "expected_queue": "EmergencyQueue",
+    "expected_behavior": "call_queued",
+    "expected_contact_attributes": { "priority": "emergency" },
+    "attributes": { "intent": "emergency" }
   }
 ]
