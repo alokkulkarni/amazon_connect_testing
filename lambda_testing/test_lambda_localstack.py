@@ -77,11 +77,17 @@ def _wait_for_function_active(lambda_client, function_name: str, timeout: int = 
             if state == "Active":
                 return
             if state == "Failed":
-                raise RuntimeError(f"Function {function_name} entered Failed state")
+                reason = resp.get("StateReason", "no reason returned")
+                reason_code = resp.get("StateReasonCode", "")
+                raise RuntimeError(
+                    f"Function {function_name} entered Failed state. "
+                    f"StateReasonCode={reason_code!r}  StateReason={reason!r}"
+                )
+            # Pending / Inactive – keep polling
         except ClientError:
             pass
         time.sleep(0.5)
-    # LocalStack may not set State; treat timeout as ok
+    # LocalStack may not report State at all; treat timeout as "probably ok"
     print(f"WARNING: could not confirm Active state for {function_name} within {timeout}s – continuing")
 
 
@@ -115,11 +121,21 @@ def _setup_resources(clients: dict, setup_config: dict) -> None:
 
 @pytest.fixture(scope="session")
 def localstack_container():
-    """Start a LocalStack container once for the entire test session."""
+    """Start a LocalStack container once for the entire test session.
+
+    LAMBDA_EXECUTOR=local tells LocalStack to run Lambda functions directly
+    inside its own container (no inner Docker daemon needed).  Without this
+    LocalStack 3.x tries to launch per-invocation Docker containers, which
+    fails when the host Docker socket is not mounted – causing every function
+    to land in 'Failed' state immediately after creation.
+    """
     container = LocalStackContainer(
         image="localstack/localstack:3.4.0",
     )
     container.with_services("lambda", "s3", "dynamodb")
+    # Use in-process executor so no Docker-in-Docker is required
+    container.with_env("LAMBDA_EXECUTOR", "local")
+    container.with_env("LAMBDA_IGNORE_ARCHITECTURE", "1")  # avoids arm64/amd64 mismatch on Apple Silicon
     with container as ls:
         # Brief pause to let services initialise
         time.sleep(2)
@@ -187,7 +203,7 @@ def test_lambda_function(aws_clients, lambda_zip, test_case):
 
     aws_clients["lambda"].create_function(
         FunctionName=function_name,
-        Runtime="python3.12",
+        Runtime="python3.11",   # python3.11 is bundled in localstack/localstack:3.x
         Role=_MOCK_ROLE,
         Handler=handler,
         Code={"ZipFile": zip_bytes},
