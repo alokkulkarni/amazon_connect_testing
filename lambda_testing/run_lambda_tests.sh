@@ -1,35 +1,95 @@
-#!/bin/bash
-echo "Setting up Lambda Regression Test Environment..."
+#!/usr/bin/env bash
+# run_lambda_tests.sh – Run Lambda regression tests against LocalStack.
+#
+# Usage (from any directory):
+#   ./lex_testing/run_lambda_tests.sh            # default – uses .env at repo root
+#   PYTEST_ARGS="-k TC-001 -x" ./run_lambda_tests.sh  # filter / stop-on-first-failure
+#
+# Prerequisites:
+#   - Docker running
+#   - pip packages installed (pip install -r requirements.txt from repo root)
 
-# Ensure we are in the script's directory
-cd "$(dirname "$0")"
+set -euo pipefail
 
-# Create virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
-    python3 -m venv venv
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Load .env from repo root (best-effort)
+# ---------------------------------------------------------------------------
+ENV_FILE="${REPO_ROOT}/.env"
+if [ -f "${ENV_FILE}" ]; then
+  set -o allexport
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +o allexport
+  echo "[info] Loaded environment from ${ENV_FILE}"
 fi
 
-source venv/bin/activate
-
-# Install dependencies
-if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt
+# ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+if ! command -v python3 &>/dev/null; then
+  echo "[error] python3 not found. Install Python 3.9+"
+  exit 1
 fi
 
-echo "Running Lambda Regression Tests with LocalStack..."
-# We use pytest to run the test script
-# -s allows stdout to be seen (for print statements)
-# -v for verbose output
-pytest -s -v test_lambda_localstack.py
+if ! command -v pytest &>/dev/null; then
+  echo "[error] pytest not found. Run: pip install -r requirements.txt"
+  exit 1
+fi
+
+if ! docker info &>/dev/null 2>&1; then
+  echo "[error] Docker is not running. Start Docker Desktop and retry."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Create report directory
+# ---------------------------------------------------------------------------
+REPORT_DIR="${SCRIPT_DIR}/reports"
+mkdir -p "${REPORT_DIR}"
+
+# ---------------------------------------------------------------------------
+# Banner
+# ---------------------------------------------------------------------------
+echo ""
+echo "================================================================"
+echo "  Lambda Regression Tests – LocalStack"
+echo "================================================================"
+echo "  Test cases : ${SCRIPT_DIR}/lambda_test_cases.json"
+echo "  Lambda src  : ${SCRIPT_DIR}/sample_lambda.py"
+echo "  Reports dir : ${REPORT_DIR}"
+echo "================================================================"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Run pytest from SCRIPT_DIR so __file__-based paths resolve correctly.
+# pytest-html produces the HTML report; conftest.py writes the JSON report.
+# ---------------------------------------------------------------------------
+EXTRA_ARGS="${PYTEST_ARGS:-}"
+
+cd "${SCRIPT_DIR}"
+pytest \
+  -s -v \
+  --tb=short \
+  --html="${REPORT_DIR}/lambda_test_report.html" \
+  --self-contained-html \
+  test_lambda_localstack.py \
+  ${EXTRA_ARGS}
 
 EXIT_CODE=$?
 
-deactivate
-
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "Lambda Regression Tests Passed!"
+echo ""
+echo "================================================================"
+if [ "${EXIT_CODE}" -eq 0 ]; then
+  echo "  RESULT: ALL TESTS PASSED"
 else
-    echo "Lambda Regression Tests Failed!"
+  echo "  RESULT: ONE OR MORE TESTS FAILED (exit code ${EXIT_CODE})"
 fi
+echo "  JSON report : ${REPORT_DIR}/lambda_test_report.json"
+echo "  HTML report : ${REPORT_DIR}/lambda_test_report.html"
+echo "================================================================"
+echo ""
 
-exit $EXIT_CODE
+exit "${EXIT_CODE}"
