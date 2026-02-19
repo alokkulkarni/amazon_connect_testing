@@ -1,0 +1,370 @@
+name: Lambda AWS Regression Tests
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  # Manual / pipeline trigger with full parameter control
+  workflow_dispatch:
+    inputs:
+      test_cases_file:
+        description: >
+          Path to the test-cases JSON file.
+          Relative to the repo root (e.g. lambda_testing/lambda_test_cases.json)
+          or an absolute path inside the runner workspace.
+        required: false
+        default: 'lambda_testing/lambda_test_cases.json'
+      report_dir:
+        description: >
+          Directory for JSON + HTML reports (relative to repo root).
+        required: false
+        default: 'lambda_testing/reports'
+      function_name:
+        description: >
+          Run ALL test cases against this single deployed Lambda function name.
+          Overrides per-case function names in the JSON file.
+        required: false
+        default: ''
+      function_prefix:
+        description: >
+          Prefix prepended to every function_name in the test-cases JSON.
+          Example: "myapp-test-" maps "s3-processor" → "myapp-test-s3-processor".
+        required: false
+        default: ''
+      filter:
+        description: >
+          Comma-separated test-case name fragments to run.
+          Leave empty to run all cases. Example: "TC-001,TC-003"
+        required: false
+        default: ''
+      aws_region:
+        description: 'AWS region for the test environment (default: us-east-1)'
+        required: false
+        default: 'us-east-1'
+      deploy_for_test:
+        description: >
+          Upload and create/update Lambda functions before each test case
+          (requires LAMBDA_EXECUTION_ROLE_ARN secret or var to be set).
+        type: boolean
+        required: false
+        default: false
+      cleanup_resources:
+        description: 'Delete created S3/DynamoDB resources after the run'
+        type: boolean
+        required: false
+        default: true
+      resource_prefix:
+        description: 'Prefix for S3/DynamoDB resources created during setup'
+        required: false
+        default: 'regtest-'
+      pytest_args:
+        description: 'Extra pytest arguments passed directly to pytest (e.g. -x --tb=long)'
+        required: false
+        default: ''
+
+  # Automatic trigger on push to main when Lambda testing files change
+  push:
+    branches: [main]
+    paths:
+      - 'lambda_testing/**'
+      - '.github/workflows/lambda_aws_regression.yml'
+
+  # Automatic trigger on PRs targeting main when Lambda testing files change
+  pull_request:
+    branches: [main]
+    paths:
+      - 'lambda_testing/**'
+      - '.github/workflows/lambda_aws_regression.yml'
+
+  # Optional scheduled regression run (e.g. nightly at 02:00 UTC)
+  # Uncomment and adjust the cron to enable:
+  # schedule:
+  #   - cron: '0 2 * * *'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prevent concurrent regression runs against the same environment
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: lambda-aws-regression-${{ github.ref }}
+  cancel-in-progress: false   # don't cancel mid-run: could leave dangling AWS resources
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Default shell
+# ─────────────────────────────────────────────────────────────────────────────
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lambda-regression:
+    name: Lambda Regression (AWS ${{ inputs.aws_region || vars.AWS_TEST_REGION || 'us-east-1' }})
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write   # required for AWS OIDC token exchange
+      contents: read    # required for actions/checkout
+      checks: write     # allows annotating test failures in the PR checks UI
+
+    # ── Gate for push / PR runs ────────────────────────────────────────────
+    # For push and PR events, only run when AWS credentials are configured.
+    # Set the repository variable ENABLE_AWS_REGRESSION=true to opt in.
+    # workflow_dispatch always runs (the caller is responsible for credentials).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      vars.ENABLE_AWS_REGRESSION == 'true'
+
+    steps:
+      # ── 1. Source checkout ───────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ──────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: lambda_testing/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r lambda_testing/requirements.txt
+
+      # ── 3. AWS credentials – OIDC (recommended) ──────────────────────────
+      # Requires a secret AWS_TEST_ROLE_ARN pointing to an IAM role that has
+      # a trust policy allowing assume-role from this GitHub repo's OIDC provider.
+      # See: https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
+      - name: Configure AWS credentials (OIDC)
+        if: vars.AWS_AUTH_METHOD != 'keys'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TEST_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region || vars.AWS_TEST_REGION || 'us-east-1' }}
+          role-session-name: lambda-regression-${{ github.run_id }}
+
+      # ── 3b. AWS credentials – static keys (fallback) ─────────────────────
+      # Set repository variable AWS_AUTH_METHOD=keys to use static keys instead
+      # of OIDC (e.g. for environments that cannot use GitHub OIDC).
+      - name: Configure AWS credentials (static access keys)
+        if: vars.AWS_AUTH_METHOD == 'keys'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_TEST_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_TEST_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_TEST_SESSION_TOKEN }}
+          aws-region: ${{ inputs.aws_region || vars.AWS_TEST_REGION || 'us-east-1' }}
+
+      # ── 4. Prepare directories ────────────────────────────────────────────
+      - name: Create report output directory
+        run: |
+          REPORT_DIR="${{ inputs.report_dir || 'lambda_testing/reports' }}"
+          mkdir -p "${REPORT_DIR}"
+          echo "REPORT_DIR=${REPORT_DIR}" >> "$GITHUB_ENV"
+
+      # ── 5. Run regression tests ───────────────────────────────────────────
+      - name: Run Lambda regression tests
+        env:
+          # ── Paths ───────────────────────────────────────────────────────
+          LAMBDA_TEST_CASES_FILE: >-
+            ${{ inputs.test_cases_file
+                || vars.LAMBDA_TEST_CASES_FILE
+                || 'lambda_testing/lambda_test_cases.json' }}
+          LAMBDA_REPORT_DIR: >-
+            ${{ inputs.report_dir
+                || vars.LAMBDA_REPORT_DIR
+                || 'lambda_testing/reports' }}
+          # ── AWS connection ───────────────────────────────────────────────
+          # Credentials are already in the environment via configure-aws-credentials.
+          # Set region explicitly so the Python SDK also picks it up.
+          AWS_TEST_REGION: >-
+            ${{ inputs.aws_region
+                || vars.AWS_TEST_REGION
+                || 'us-east-1' }}
+          # ── Function targeting ───────────────────────────────────────────
+          LAMBDA_TARGET_FUNCTION: >-
+            ${{ inputs.function_name
+                || vars.LAMBDA_TARGET_FUNCTION
+                || '' }}
+          LAMBDA_FUNCTION_PREFIX: >-
+            ${{ inputs.function_prefix
+                || vars.LAMBDA_FUNCTION_PREFIX
+                || '' }}
+          LAMBDA_DEPLOY_FOR_TEST: >-
+            ${{ inputs.deploy_for_test
+                || vars.LAMBDA_DEPLOY_FOR_TEST
+                || 'false' }}
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+          # ── Resource management ──────────────────────────────────────────
+          TEST_RESOURCE_PREFIX: >-
+            ${{ inputs.resource_prefix
+                || vars.TEST_RESOURCE_PREFIX
+                || 'regtest-' }}
+          CLEANUP_RESOURCES: >-
+            ${{ inputs.cleanup_resources
+                || vars.CLEANUP_RESOURCES
+                || 'true' }}
+          # ── Filtering ────────────────────────────────────────────────────
+          REGRESSION_TEST_FILTER: >-
+            ${{ inputs.filter
+                || vars.REGRESSION_TEST_FILTER
+                || '' }}
+          PYTEST_ARGS: >-
+            ${{ inputs.pytest_args
+                || vars.PYTEST_ARGS
+                || '' }}
+        run: |
+          chmod +x lambda_testing/run_aws_regression.sh
+          ./lambda_testing/run_aws_regression.sh \
+            --test-cases "${LAMBDA_TEST_CASES_FILE}" \
+            --report-dir "${LAMBDA_REPORT_DIR}"
+
+      # ── 6. Upload reports as artefacts ────────────────────────────────────
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-regression-reports-${{ github.run_id }}
+          path: |
+            ${{ env.REPORT_DIR }}/aws_regression_report.json
+            ${{ env.REPORT_DIR }}/aws_regression_report.html
+            ${{ env.REPORT_DIR }}/aws_regression_report_pytest.html
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ── 7. Job summary ────────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        env:
+          REPORT_JSON: ${{ env.REPORT_DIR }}/aws_regression_report.json
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+
+          report_path = os.environ.get("REPORT_JSON", "lambda_testing/reports/aws_regression_report.json")
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
+
+          if not os.path.exists(report_path):
+              print(f"[warn] Report not found at {report_path} – skipping job summary.", file=sys.stderr)
+              if step_summary:
+                  with open(step_summary, "a") as fh:
+                      fh.write("## ⚠️ Lambda Regression Report\n\nNo report file was generated. Check the test step logs.\n")
+              sys.exit(0)
+
+          with open(report_path) as fh:
+              data = json.load(fh)
+
+          s       = data.get("summary", {})
+          env_inf = data.get("environment", {})
+          cases   = data.get("test_cases", [])
+
+          total   = s.get("total",   0)
+          passed  = s.get("passed",  0)
+          failed  = s.get("failed",  0)
+          skipped = s.get("skipped", 0)
+          errored = s.get("errored", 0)
+          pct     = round(passed / total * 100, 1) if total else 0
+          icon    = "✅" if (failed == 0 and errored == 0) else "❌"
+
+          lines = [
+              f"## {icon} Lambda AWS Regression Report",
+              "",
+              "### Summary",
+              "",
+              "| Metric | Value |",
+              "|--------|-------|",
+              f"| Total test cases | **{total}** |",
+              f"| ✅ Passed | **{passed}** |",
+              f"| ❌ Failed | **{failed}** |",
+              f"| ⏭️  Skipped | **{skipped}** |",
+              f"| 💥 Errors | **{errored}** |",
+              f"| Pass rate | **{pct}%** |",
+              "",
+              "### Environment",
+              "",
+              "| Key | Value |",
+              "|-----|-------|",
+          ]
+          for k, v in env_inf.items():
+              lines.append(f"| {k} | `{v}` |")
+          lines.append("")
+
+          # Coverage bar (text approximation)
+          bar_filled = int(pct / 5)       # each block = 5 %
+          bar_empty  = 20 - bar_filled
+          bar = "█" * bar_filled + "░" * bar_empty
+          lines += [
+              "### Coverage",
+              "",
+              f"`{bar}` **{pct}%** pass rate",
+              "",
+          ]
+
+          # Failure details (collapsible)
+          failures = [c for c in cases if c["outcome"] in ("FAILED", "ERROR")]
+          if failures:
+              lines += ["### ❌ Failures & Errors", ""]
+              for c in failures:
+                  err = (c.get("error") or "").strip()
+                  # Keep last 25 lines to avoid huge summaries
+                  err_lines = err.splitlines()
+                  if len(err_lines) > 25:
+                      err_lines = ["... (truncated)", ""] + err_lines[-25:]
+                  err_body = "\n".join(err_lines)
+                  lines.append(
+                      f"<details><summary><b>{c['name']}</b> "
+                      f"&mdash; {c['outcome']} ({c['duration_s']:.3f}s)</summary>\n"
+                      f"\n```text\n{err_body}\n```\n\n</details>\n"
+                  )
+
+          # All test results table
+          lines += [
+              "### All Test Results",
+              "",
+              "| # | Test Case | Result | Duration |",
+              "|---|-----------|--------|----------|",
+          ]
+          outcome_icon = {
+              "PASSED":  "✅ PASS",
+              "FAILED":  "❌ FAIL",
+              "SKIPPED": "⏭️  SKIP",
+              "ERROR":   "💥 ERRO",
+          }
+          for i, c in enumerate(cases, 1):
+              oi = outcome_icon.get(c["outcome"], c["outcome"])
+              lines.append(f"| {i} | {c['name']} | {oi} | {c['duration_s']:.3f}s |")
+          lines.append("")
+
+          # Write to step summary
+          content = "\n".join(lines)
+          print(content)   # also print to console log
+
+          if step_summary:
+              with open(step_summary, "a") as fh:
+                  fh.write(content + "\n")
+              print(f"\n[info] Job summary written to {step_summary}")
+          PYEOF
+
+      # ── 8. Fail the job if tests failed (safe-exit from summary step) ─────
+      - name: Check regression result
+        if: always()
+        env:
+          REPORT_JSON: ${{ env.REPORT_DIR }}/aws_regression_report.json
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+          report_path = os.environ.get("REPORT_JSON", "lambda_testing/reports/aws_regression_report.json")
+          if not os.path.exists(report_path):
+              # No report means the test step itself failed – the job is already failing
+              sys.exit(0)
+          with open(report_path) as fh:
+              data = json.load(fh)
+          s = data.get("summary", {})
+          if s.get("failed", 0) > 0 or s.get("errored", 0) > 0:
+              print(
+                  f"[FAIL] {s['failed']} failed, {s['errored']} errored "
+                  f"out of {s['total']} total test cases.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print(f"[PASS] All {s['total']} test cases passed.")
+          PYEOF

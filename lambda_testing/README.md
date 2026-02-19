@@ -172,7 +172,7 @@ A pass/fail summary table is also printed to the console at the end of every run
 
 ---
 
-## Troubleshooting
+## Troubleshooting (LocalStack)
 
 | Problem | Fix |
 |---------|-----|
@@ -180,4 +180,137 @@ A pass/fail summary table is also printed to the console at the end of every run
 | Port 4566 in use | Stop other LocalStack instances: `docker ps` then `docker stop <id>` |
 | `testcontainers` can't find Docker socket | On Linux: `sudo chmod 666 /var/run/docker.sock` |
 | Tests slow to start | Normal – LocalStack image pull on first run (~1-2 min). Subsequent runs are fast. |
+
+---
+
+---
+
+# AWS Live-Environment Regression Tests
+
+`test_lambda_aws_regression.py` runs the same `lambda_test_cases.json` test
+suite against **real AWS Lambda functions** in a test environment.  No Docker
+or LocalStack is needed – the script connects directly to AWS using your
+credentials.
+
+## Directory Structure (additions)
+
+```
+lambda_testing/
+├── test_lambda_aws_regression.py   # AWS regression test runner
+├── run_aws_regression.sh           # shell entry point (cwd-independent)
+└── reports/
+    ├── aws_regression_report.json  # generated after run
+    └── aws_regression_report.html  # standalone HTML report with coverage
+```
+
+---
+
+## Configuration
+
+Set values in `lambda_testing/.env` or as shell environment variables.
+
+### AWS Connection (choose one)
+
+| Variable | Description |
+|----------|-------------|
+| `AWS_TEST_PROFILE` | Named AWS CLI profile (e.g. `my-test-profile`) |
+| `AWS_TEST_ACCESS_KEY_ID` + `AWS_TEST_SECRET_ACCESS_KEY` | Static IAM credentials |
+| `AWS_TEST_SESSION_TOKEN` | Session token for temporary credentials |
+| `AWS_TEST_ROLE_ARN` | IAM role to assume (combine with profile/keys for cross-account) |
+| `AWS_TEST_ROLE_SESSION_NAME` | Session name when assuming role (default: `lambda-regression`) |
+| `AWS_TEST_REGION` | Target region (default: `us-east-1`) |
+
+### Function Targeting
+
+| Variable | Description |
+|----------|-------------|
+| `LAMBDA_TARGET_FUNCTION` | Run ALL test cases against this single deployed function |
+| `LAMBDA_FUNCTION_PREFIX` | Prepend a prefix to every `function_name` in test cases |
+| `LAMBDA_DEPLOY_FOR_TEST` | Set `true` to upload/create functions before each test (requires `LAMBDA_EXECUTION_ROLE_ARN`) |
+| `LAMBDA_EXECUTION_ROLE_ARN` | Execution role ARN used when deploying functions |
+
+### Resource Management
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEST_RESOURCE_PREFIX` | `regtest-` | Prefix for S3 buckets & DynamoDB tables created during setup |
+| `CLEANUP_RESOURCES` | `true` | Delete created resources after the run |
+
+### Test Filtering
+
+| Variable | Description |
+|----------|-------------|
+| `REGRESSION_TEST_FILTER` | Comma-separated name fragments – only matching test cases are run |
+| `PYTEST_ARGS` | Extra flags passed directly to pytest |
+
+---
+
+## Running Tests
+
+### Shell script (recommended)
+
+```bash
+# From repo root – use default credential chain, run all test cases
+./lambda_testing/run_aws_regression.sh
+
+# Test a specific deployed function
+./lambda_testing/run_aws_regression.sh --function my-test-lambda
+
+# Use a named AWS profile and region
+./lambda_testing/run_aws_regression.sh --profile my-test-profile --region eu-west-1
+
+# Apply a function prefix and run only selected test cases
+./lambda_testing/run_aws_regression.sh --prefix "myapp-test-" --filter "TC-001,TC-002"
+
+# Assume a cross-account role
+./lambda_testing/run_aws_regression.sh --role arn:aws:iam::123456789012:role/TestRole
+
+# Keep created resources after the run (useful for debugging)
+./lambda_testing/run_aws_regression.sh --no-cleanup
+
+# Upload and deploy functions before testing
+./lambda_testing/run_aws_regression.sh --deploy
+
+# Show all options
+./lambda_testing/run_aws_regression.sh --help
+```
+
+### Direct pytest
+
+```bash
+cd lambda_testing
+export AWS_TEST_PROFILE=my-test-profile
+export LAMBDA_TARGET_FUNCTION=my-deployed-lambda
+pytest -s -v test_lambda_aws_regression.py
+```
+
+---
+
+## Test Reports
+
+After each run, three report files are written to `lambda_testing/reports/`:
+
+| File | Description |
+|------|-------------|
+| `aws_regression_report.json` | Machine-readable per-test results, durations, error details, env info |
+| `aws_regression_report.html` | Self-contained HTML report with pass/fail badges, coverage bars, failure diffs |
+| `aws_regression_report_pytest.html` | pytest-html report (only if `pytest-html` is installed) |
+
+The HTML report includes:
+- Summary dashboard with pass-rate bar
+- Test environment info (account, region, profile, function target)
+- Per-test result with full failure reason / traceback
+- Coverage analysis table with visual bars
+
+---
+
+## Troubleshooting (AWS Regression)
+
+| Problem | Fix |
+|---------|-----|
+| `ResourceNotFoundException` on invoke | Function not found in AWS. Check `LAMBDA_TARGET_FUNCTION` / `LAMBDA_FUNCTION_PREFIX` or set `LAMBDA_DEPLOY_FOR_TEST=true` |
+| Credential error at startup | Verify `AWS_TEST_PROFILE`, static keys, or instance-role credentials in `.env` |
+| `AccessDeniedException` | Ensure the IAM identity has `lambda:InvokeFunction`, `s3:*`, `dynamodb:*` permissions in the test account |
+| Tests create unexpected resources | Set `TEST_RESOURCE_PREFIX` to a distinctive value; set `CLEANUP_RESOURCES=true` |
+| Want to run only specific test cases | Set `REGRESSION_TEST_FILTER=TC-001,TC-003` or use `--filter` flag |
 
