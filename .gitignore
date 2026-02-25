@@ -1,44 +1,72 @@
-# Environment / secrets
+# ── Environment / secrets ─────────────────────────────────────────────────
 .env
 .env.local
 .env.*.local
-# Per-suite .env files (explicit paths for clarity)
+
+# Per-suite .env files
 voice_testing/.env
 lex_testing/.env
 lambda_testing/.env
+connect_voice_simulated/.env
 
-# Python
+# ── Python ────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyd
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 *.egg-info/
 dist/
 build/
 .eggs/
+pip-wheel-metadata/
 
-# Virtual environments
+# ── Virtual environments ───────────────────────────────────────────────────
 .venv/
 venv/
 env/
+.python-version
 
-# IDE
+# ── Node / JavaScript ─────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# ── Test output & reports ─────────────────────────────────────────────────
+# All test-results directories (root and any sub-folder) plus timestamped runs
+test-results/
+**/test-results/
+junit.xml
+*.xml
+
+# Log files
+*.log
+
+# ── Slides / generated assets ─────────────────────────────────────────────
+slides/
+
+# ── AWS / Terraform / CDK / SAM ───────────────────────────────────────────
+.terraform/
+.terraform.lock.hcl
+cdk.out/
+samconfig.toml
+.aws-sam/
+infrastructure_output.json
+
+# ── IDE / editor ──────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
-# macOS
+# ── macOS ─────────────────────────────────────────────────────────────────
 .DS_Store
-
-# Terraform / CDK / SAM
-.terraform/
-cdk.out/
-samconfig.toml
-.aws-sam/
-
-# Test output
-junit.xml
-test-results/
+.AppleDouble
+.LSOverride
+Thumbs.db

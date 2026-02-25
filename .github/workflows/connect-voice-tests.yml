@@ -1,0 +1,436 @@
+# =============================================================================
+# .github/workflows/connect-voice-tests.yml
+# ==========================================
+# Amazon Connect Dashboard – Voice Simulation Test Pipeline
+#
+# Trigger:
+#   • on-demand via workflow_dispatch (with runtime inputs)
+#   • Can also be added to pull_request / push triggers at any time
+#
+# What it does:
+#   1. Checks out the repository
+#   2. Sets up Python 3.11
+#   3. Installs dependencies
+#   4. Assumes an IAM role via GitHub OIDC (no long-lived credentials)
+#   5. Runs the Connect Dashboard test runner with up to 5 concurrent tests
+#   6. Publishes all three report formats (JSON, HTML, XML) as artefacts
+#   7. Publishes JUnit XML results as GitHub Actions test annotations
+#   8. Cats the HTML report to the job log so it is immediately visible
+#   9. Posts a step-level summary to the GitHub Actions job summary page
+#
+# Required repository secrets / variables:
+#   Secrets:
+#     AWS_ROLE_ARN            – IAM role to assume (see iam_trust_policy.json)
+#
+#   Variables (Settings → Actions → Variables → Repository variables):
+#     CONNECT_INSTANCE_ID     – Amazon Connect instance UUID
+#     CONNECT_INSTANCE_ALIAS  – Amazon Connect instance alias (optional)
+#     AWS_REGION              – AWS region (e.g. eu-west-2, default: eu-west-2)
+#
+# =============================================================================
+
+name: "Amazon Connect – Voice Simulation Tests"
+
+on:
+  # ── Manual / on-demand trigger ────────────────────────────────────────────
+  workflow_dispatch:
+    inputs:
+
+      suite_id:
+        description: |
+          (Optional) Run only this test suite ID, e.g. SUITE-001.
+          Leave blank to run all suites.
+        required: false
+        default: ""
+
+      test_case_id:
+        description: |
+          (Optional) Run only this individual test case ID.
+          Leave blank to run all tests.
+        required: false
+        default: ""
+
+      concurrency:
+        description: "Max tests to run concurrently (default: 5)"
+        required: false
+        default: "5"
+
+      log_level:
+        description: "Logging verbosity: DEBUG | INFO | WARNING | ERROR"
+        required: false
+        default: "INFO"
+        type: choice
+        options:
+          - DEBUG
+          - INFO
+          - WARNING
+          - ERROR
+
+      dry_run:
+        description: "Dry run – print plan without calling Connect APIs"
+        required: false
+        default: false
+        type: boolean
+
+# ── Permissions required for GitHub OIDC token exchange ──────────────────────
+permissions:
+  id-token:   write   # Allows requesting a JWT from GitHub's OIDC provider
+  contents:   read    # Allows checking out the repository
+  checks:     write   # Allows publishing test annotations
+  actions:    read    # Needed by some test-reporter actions
+
+# ── Global env – available in all steps ──────────────────────────────────────
+# Only non-sensitive values live here. AWS_ROLE_ARN stays in the credentials
+# step exclusively so it is never leaked into unrelated step environments.
+env:
+  AWS_REGION:              ${{ vars.AWS_REGION || 'eu-west-2' }}
+  CONNECT_OUTPUT_DIR:      "connect_voice_simulated/test-results"
+  CONNECT_CONCURRENCY:     ${{ github.event.inputs.concurrency || '5' }}
+  PYTHONUNBUFFERED:        "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  # ===========================================================================
+  # run-tests
+  # ===========================================================================
+  run-tests:
+    name: "Run Connect Voice Tests"
+    runs-on: ubuntu-latest
+
+    # Outputs allow downstream jobs to read the pass/fail summary
+    outputs:
+      test_total:   ${{ steps.parse_results.outputs.test_total }}
+      test_passed:  ${{ steps.parse_results.outputs.test_passed }}
+      test_failed:  ${{ steps.parse_results.outputs.test_failed }}
+      pass_rate:    ${{ steps.parse_results.outputs.pass_rate }}
+      run_id:       ${{ steps.parse_results.outputs.run_id }}
+
+    steps:
+
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ────────────────────────────────────────────────────
+      - name: "Set up Python 3.11"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: "connect_voice_simulated/requirements.txt"
+
+      # ── 3. Install dependencies ────────────────────────────────────────────
+      - name: "Install Python dependencies"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r connect_voice_simulated/requirements.txt
+
+      # ── 3a. Generate .env for the Python runner ────────────────────────────
+      # Single source of truth pattern:
+      #   • Local dev  → developer fills in connect_voice_simulated/.env manually
+      #                  (copy from .env.example, never committed)
+      #   • CI (here)  → this step writes the same .env from GitHub
+      #                  secrets / variables so the Python script uses an
+      #                  identical load path in both environments.
+      #
+      # To add a new variable:
+      #   1. Add it to .env.example  (the canonical reference)
+      #   2. Add it to GitHub Settings → Secrets and variables → Actions
+      #   3. Add it to the printf block below – that's all.
+      #
+      # Note: AWS_ROLE_ARN is intentionally excluded – it is a secret used only
+      # by the AWS credentials step and must not be written to any file.
+      - name: "Generate .env for Python runner"
+        env:
+          # Pull every variable from GitHub vars/secrets into this step's shell
+          _CONNECT_INSTANCE_ID:     ${{ vars.CONNECT_INSTANCE_ID }}
+          _CONNECT_INSTANCE_ALIAS:  ${{ vars.CONNECT_INSTANCE_ALIAS || '' }}
+          _AWS_ROLE_SESSION_NAME:   ${{ vars.AWS_ROLE_SESSION_NAME || 'connect-voice-test-runner' }}
+          _CONNECT_PHONE_NUMBER:    ${{ vars.CONNECT_PHONE_NUMBER || '' }}
+          _CONNECT_MAIN_FLOW_ID:    ${{ vars.CONNECT_MAIN_FLOW_ID || '' }}
+          _CONNECT_LOAN_FLOW_ID:    ${{ vars.CONNECT_LOAN_FLOW_ID || '' }}
+          _CONNECT_DISPUTE_FLOW_ID: ${{ vars.CONNECT_DISPUTE_FLOW_ID || '' }}
+          _CONNECT_GENERAL_QUEUE_ID: ${{ vars.CONNECT_GENERAL_QUEUE_ID || '' }}
+          _CONNECT_GOLD_QUEUE_ID:   ${{ vars.CONNECT_GOLD_QUEUE_ID || '' }}
+        run: |
+          printf '%s\n' \
+            "# Auto-generated by GitHub Actions – do not edit manually" \
+            "AWS_REGION=${AWS_REGION}" \
+            "CONNECT_INSTANCE_ID=${_CONNECT_INSTANCE_ID}" \
+            "CONNECT_INSTANCE_ALIAS=${_CONNECT_INSTANCE_ALIAS}" \
+            "AWS_ROLE_SESSION_NAME=${_AWS_ROLE_SESSION_NAME}" \
+            "CONNECT_OUTPUT_DIR=${CONNECT_OUTPUT_DIR}" \
+            "CONNECT_CONCURRENCY=${CONNECT_CONCURRENCY}" \
+            "CONNECT_PHONE_NUMBER=${_CONNECT_PHONE_NUMBER}" \
+            "CONNECT_MAIN_FLOW_ID=${_CONNECT_MAIN_FLOW_ID}" \
+            "CONNECT_LOAN_FLOW_ID=${_CONNECT_LOAN_FLOW_ID}" \
+            "CONNECT_DISPUTE_FLOW_ID=${_CONNECT_DISPUTE_FLOW_ID}" \
+            "CONNECT_GENERAL_QUEUE_ID=${_CONNECT_GENERAL_QUEUE_ID}" \
+            "CONNECT_GOLD_QUEUE_ID=${_CONNECT_GOLD_QUEUE_ID}" \
+            > connect_voice_simulated/.env
+          echo "Generated connect_voice_simulated/.env:"
+          # Print the file but mask any non-empty values that look like IDs
+          sed 's/=.\+/=***/' connect_voice_simulated/.env
+
+      # ── 4. Assume IAM role via GitHub OIDC ────────────────────────────────
+      #
+      # This step exchanges the GitHub OIDC JWT for short-lived AWS credentials.
+      # No long-lived AWS access keys are stored anywhere.
+      #
+      # Pre-requisite: The IAM role trust policy must allow the GitHub OIDC
+      # provider and match this repository/branch. See iam_trust_policy.json.
+      - name: "Configure AWS credentials (OIDC role assumption)"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume:          ${{ secrets.AWS_ROLE_ARN }}  # secret – used only here, never in .env
+          role-session-name:       "connect-voice-test-runner"
+          aws-region:              ${{ env.AWS_REGION }}
+          # Increase duration for large test suites; must match the role's
+          # MaxSessionDuration setting (default 3600 s / 1 h).
+          role-duration-seconds:   3600
+
+      # ── 5. Verify AWS identity ─────────────────────────────────────────────
+      - name: "Verify assumed AWS identity"
+        run: |
+          echo "=== Assumed role identity ==="
+          aws sts get-caller-identity
+          echo "=== Amazon Connect access check ==="
+          aws connect list-instances --query 'InstanceSummaryList[].Id' --output text || true
+
+      # ── 6. Build runner arguments ──────────────────────────────────────────
+      # Construct optional CLI flags from workflow inputs, keeping the command
+      # clean when no filtering is requested.
+      - name: "Prepare test runner arguments"
+        id: prepare_args
+        shell: bash
+        run: |
+          EXTRA_ARGS=""
+
+          # Append --suite if a suite filter was provided
+          if [[ -n "${{ github.event.inputs.suite_id }}" ]]; then
+            EXTRA_ARGS="${EXTRA_ARGS} --suite ${{ github.event.inputs.suite_id }}"
+          fi
+
+          # Append --test if a single test case was specified
+          if [[ -n "${{ github.event.inputs.test_case_id }}" ]]; then
+            EXTRA_ARGS="${EXTRA_ARGS} --test ${{ github.event.inputs.test_case_id }}"
+          fi
+
+          # Append --dry-run if requested
+          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            EXTRA_ARGS="${EXTRA_ARGS} --dry-run"
+          fi
+
+          # Append --log-level
+          EXTRA_ARGS="${EXTRA_ARGS} --log-level ${{ github.event.inputs.log_level || 'INFO' }}"
+
+          # Append --concurrency
+          EXTRA_ARGS="${EXTRA_ARGS} --concurrency ${{ github.event.inputs.concurrency || '5' }}"
+
+          echo "extra_args=${EXTRA_ARGS}" >> "$GITHUB_OUTPUT"
+          echo "Test runner extra args: ${EXTRA_ARGS}"
+
+      # ── 7. Execute tests ───────────────────────────────────────────────────
+      # The runner exits with code 1 if any tests fail; we capture that and
+      # continue so that artefacts are still uploaded for review.
+      - name: "Execute Amazon Connect voice tests"
+        id: run_tests
+        continue-on-error: true
+        env:
+          # Pass the output dir explicitly so the runner writes reports here
+          CONNECT_OUTPUT_DIR: ${{ env.CONNECT_OUTPUT_DIR }}
+        run: |
+          echo "============================================================"
+          echo "  Amazon Connect Dashboard Voice Test Runner"
+          echo "  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "============================================================"
+
+          python connect_voice_simulated/run_connect_tests.py \
+            --config      connect_voice_simulated/config.json \
+            --test-cases  connect_voice_simulated/test_cases.json \
+            --output-dir  "${CONNECT_OUTPUT_DIR}" \
+            ${{ steps.prepare_args.outputs.extra_args }}
+
+          # Capture the Python exit code BEFORE writing to GITHUB_OUTPUT.
+          # Writing to GITHUB_OUTPUT always exits 0, so we must re-exit with
+          # the original code; otherwise steps.run_tests.outcome is always
+          # 'success' and step 13 (fail gate) never triggers.
+          PYTHON_EXIT=$?
+          echo "run_exit_code=${PYTHON_EXIT}" >> "$GITHUB_OUTPUT"
+          exit ${PYTHON_EXIT}
+
+      # ── 8. Parse results for downstream steps ─────────────────────────────
+      - name: "Parse JSON results"
+        id: parse_results
+        if: always()
+        shell: bash
+        run: |
+          JSON_FILE="${CONNECT_OUTPUT_DIR}/connect_test_results.json"
+
+          if [[ -f "${JSON_FILE}" ]]; then
+            TOTAL=$(python3 -c "import json,sys; d=json.load(open('${JSON_FILE}')); print(d['statistics']['total'])" 2>/dev/null || echo "0")
+            PASSED=$(python3 -c "import json,sys; d=json.load(open('${JSON_FILE}')); print(d['statistics']['passed'])" 2>/dev/null || echo "0")
+            FAILED=$(python3 -c "import json,sys; d=json.load(open('${JSON_FILE}')); print(d['statistics']['failed'])" 2>/dev/null || echo "0")
+            RATE=$(python3 -c "import json,sys; d=json.load(open('${JSON_FILE}')); print(d['statistics']['pass_rate'])" 2>/dev/null || echo "0%")
+            RUN_ID=$(python3 -c "import json,sys; d=json.load(open('${JSON_FILE}')); print(d['run_id'])" 2>/dev/null || echo "unknown")
+
+            echo "test_total=${TOTAL}"   >> "$GITHUB_OUTPUT"
+            echo "test_passed=${PASSED}" >> "$GITHUB_OUTPUT"
+            echo "test_failed=${FAILED}" >> "$GITHUB_OUTPUT"
+            echo "pass_rate=${RATE}"     >> "$GITHUB_OUTPUT"
+            echo "run_id=${RUN_ID}"      >> "$GITHUB_OUTPUT"
+
+            echo "Total=${TOTAL}  Passed=${PASSED}  Failed=${FAILED}  PassRate=${RATE}"
+          else
+            echo "JSON results file not found: ${JSON_FILE}"
+            echo "test_total=0"   >> "$GITHUB_OUTPUT"
+            echo "test_passed=0"  >> "$GITHUB_OUTPUT"
+            echo "test_failed=0"  >> "$GITHUB_OUTPUT"
+            echo "pass_rate=0%"   >> "$GITHUB_OUTPUT"
+            echo "run_id=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 9. Cat the HTML report to the log ─────────────────────────────────
+      # This makes the full styled HTML report visible directly in the
+      # GitHub Actions step log without needing to download artefacts.
+      - name: "Output HTML report to job log"
+        if: always()
+        shell: bash
+        run: |
+          HTML_FILE="${CONNECT_OUTPUT_DIR}/connect_test_results.html"
+          echo ""
+          echo "============================================================"
+          echo "  HTML TEST REPORT"
+          echo "============================================================"
+          if [[ -f "${HTML_FILE}" ]]; then
+            cat "${HTML_FILE}"
+          else
+            echo "HTML report not found at: ${HTML_FILE}"
+          fi
+          echo "============================================================"
+
+      # ── 10. Write GitHub Actions job summary ──────────────────────────────
+      # Produces a formatted Markdown summary on the Actions run overview page.
+      - name: "Write GitHub Actions job summary"
+        if: always()
+        shell: bash
+        run: |
+          JSON_FILE="${CONNECT_OUTPUT_DIR}/connect_test_results.json"
+
+          # ── Header ────────────────────────────────────────────────────────
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Amazon Connect Voice Test Results
+
+          EOF
+
+          if [[ -f "${JSON_FILE}" ]]; then
+            python3 - "${JSON_FILE}" >> "$GITHUB_STEP_SUMMARY" <<'PYEOF'
+          import json, sys
+          from datetime import datetime
+
+          data = json.load(open(sys.argv[1]))
+          s    = data["statistics"]
+          ri   = data.get("run_id", "–")
+          inst = data.get("instance_id", "–")
+          reg  = data.get("region", "–")
+          sa   = data.get("started_at", "–")
+          fa   = data.get("finished_at", "–")
+
+          icon = "✅" if s["failed"] == 0 and s["timeout"] == 0 else "❌"
+
+          print(f"### {icon} Summary\n")
+          print(f"| Metric | Value |")
+          print(f"|--------|-------|")
+          print(f"| Run ID | `{ri}` |")
+          print(f"| Instance | `{inst}` |")
+          print(f"| Region | `{reg}` |")
+          print(f"| Started | {sa} |")
+          print(f"| Finished | {fa} |")
+          print(f"| **Total** | **{s['total']}** |")
+          print(f"| ✅ Passed | {s['passed']} |")
+          print(f"| ❌ Failed | {s['failed']} |")
+          print(f"| ⏱ Timeout | {s.get('timeout', 0)} |")
+          print(f"| ⏭ Skipped | {s.get('skipped', 0)} |")
+          print(f"| 📊 Pass Rate | **{s['pass_rate']}** |")
+          print()
+
+          # Per-suite table
+          print("### Suite Breakdown\n")
+          print("| Suite ID | Suite Name | Total | Passed | Failed |")
+          print("|----------|------------|-------|--------|--------|")
+
+          suites = {}
+          for r in data.get("results", []):
+              sid   = r.get("suite_id",   "?")
+              sname = r.get("suite_name", "?")
+              suites.setdefault(sid, {"name": sname, "total":0, "pass":0, "fail":0})
+              suites[sid]["total"] += 1
+              if r.get("status") == "PASSED":
+                  suites[sid]["pass"] += 1
+              elif r.get("status") in {"FAILED","ERROR","STOPPED"}:
+                  suites[sid]["fail"] += 1
+
+          for sid, d in suites.items():
+              icon = "✅" if d["fail"] == 0 else "❌"
+              print(f"| {sid} | {d['name']} | {d['total']} | {d['pass']} | {icon} {d['fail']} |")
+
+          print()
+
+          # Per-test table
+          print("### Test Case Results\n")
+          print("| # | Test Case | Suite | Status | Execution ID |")
+          print("|---|-----------|-------|--------|--------------|")
+          for i, r in enumerate(data.get("results", []), 1):
+              st  = r.get("status", "?")
+              ico = {"PASSED":"✅","FAILED":"❌","ERROR":"🔴","STOPPED":"⏱","SKIPPED":"⏭"}.get(st, "❓")
+              print(
+                  f"| {i} "
+                  f"| {r.get('test_case_name','?')} "
+                  f"| {r.get('suite_name','?')} "
+                  f"| {ico} {st} "
+                  f"| `{r.get('execution_id','–')}` |"
+              )
+          PYEOF
+          else
+            echo "⚠️ Results file not found – test runner may have failed before producing output." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── 11. Upload artefacts ───────────────────────────────────────────────
+      # Upload both the final combined report AND all per-batch reports so
+      # each batch’s intermediate results are always available for inspection.
+      - name: "Upload test results artéfacts (JSON + HTML + XML)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "connect-test-results-${{ github.run_number }}"
+          path: |
+            ${{ env.CONNECT_OUTPUT_DIR }}/connect_test_results.json
+            ${{ env.CONNECT_OUTPUT_DIR }}/connect_test_results.html
+            ${{ env.CONNECT_OUTPUT_DIR }}/connect_test_results.xml
+            ${{ env.CONNECT_OUTPUT_DIR }}/connect_test_results_batch_*.json
+            ${{ env.CONNECT_OUTPUT_DIR }}/connect_test_results_batch_*.html
+            ${{ env.CONNECT_OUTPUT_DIR }}/connect_test_results_batch_*.xml
+            ${{ env.CONNECT_OUTPUT_DIR }}/test_runner.log
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── 12. Publish JUnit XML test annotations ─────────────────────────────
+      # Requires the workflow to have `checks: write` permission.
+      - name: "Publish test results annotations (JUnit XML)"
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files:          "${{ env.CONNECT_OUTPUT_DIR }}/connect_test_results.xml"
+          check_name:     "Amazon Connect Voice Tests"
+          comment_title:  "Connect Test Results"
+          fail_on:        "test failures"
+          report_individual_runs: true
+
+      # ── 13. Fail the job if tests failed ───────────────────────────────────
+      # We used continue-on-error above to ensure artefacts are uploaded even
+      # when tests fail. Now we re-fail the job with a clear message.
+      - name: "Fail job if tests failed"
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          echo "::error title=Tests Failed::${{ steps.parse_results.outputs.test_failed }} test(s) failed. Pass rate: ${{ steps.parse_results.outputs.pass_rate }}"
+          exit 1

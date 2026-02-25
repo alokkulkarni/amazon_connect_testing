@@ -1,0 +1,27 @@
+{
+  "_comment": "Amazon Connect Test Desk – Simulation Test Cases for 'Sample inbound flow (first contact experience)'",
+  "_description": "Each top-level entry in 'test_suites' maps to a suite. Each test_case inside it maps to one simulation scenario. The 'simulation' block is the canonical JSON that the Amazon Connect Test Designer / StartContactFlowTest API understands. The 'test_case_id' is filled once you import/create the test in the Connect console (Test Desk → Test cases) and copy the UUID back here.",
+  "_schema_version": "3.0.0",
+  "_flow_ref": "Sample inbound flow (first contact experience)",
+  "_flow_arn": "arn:aws:connect:eu-west-2:395402194296:instance/b0351ce2-6994-4697-a2df-2480fb6b77f6/contact-flow/90248bbc-198f-4206-8d1b-cdd41f71fb54",
+  "_instance_id": "b0351ce2-6994-4697-a2df-2480fb6b77f6",
+
+  "test_suites": [
+
+    {
+      "suite_id": "SUITE-001",
+      "suite_name": "Happy Path – New Caller (greetingPlayed not set)",
+      "description": "First-time caller scenarios. greetingPlayed attribute is absent so the full greeting plays before the DTMF menu.",
+      "tags": ["smoke", "regression", "happy-path", "new-caller"],
+      "test_cases": [
+
+        {
+          "test_case_id": "186f3fdb-0b9c-4267-8b41-133c7f6f437d",
+          "name": "CVS-001 – New caller presses 1 → routed to Queue Config sub-flow",
+          "tags": ["smoke", "queue-routing", "dtmf-1"],
+          "timeout_seconds": 120
+        }
+      ]
+    }
+ ]
+}

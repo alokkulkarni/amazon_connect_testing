@@ -1,0 +1,54 @@
+{
+  "_comment": "IAM Permission Policy – attach to the GitHub Actions OIDC role.",
+  "_description": "This policy grants the minimum Connect permissions needed to start test executions, poll status via ListTestCaseExecutions, retrieve execution records via ListTestCaseExecutionRecords, and describe test cases. It also grants STS GetCallerIdentity (for identity verification) and Connect ListInstances (for the pre-flight check in the workflow). Restrict the Resource ARNs to your specific Connect instance ARN in production.",
+  "_principle": "Least-privilege – only the four test-desk APIs plus readonly lookup permissions are granted.",
+
+  "Version": "2012-10-17",
+  "Statement": [
+
+    {
+      "Sid": "ConnectTestDeskExecution",
+      "_comment": "Allows the test runner to start, poll and retrieve Connect dashboard test executions using the real Test Desk APIs.",
+      "Effect": "Allow",
+      "Action": [
+        "connect:StartTestCaseExecution",
+        "connect:GetTestCaseExecutionSummary",
+        "connect:ListTestCaseExecutionRecords",
+        "connect:DescribeTestCase"
+      ],
+      "Resource": [
+        "arn:aws:connect:REGION:ACCOUNT_ID:instance/CONNECT_INSTANCE_ID",
+        "arn:aws:connect:REGION:ACCOUNT_ID:instance/CONNECT_INSTANCE_ID/*"
+      ]
+    },
+
+    {
+      "Sid": "ConnectReadOnlyLookup",
+      "_comment": "Read-only permissions to look up queues, contact flows, Lex bots and hours-of-operation. Used for pre-flight validation and enriching test results.",
+      "Effect": "Allow",
+      "Action": [
+        "connect:ListInstances",
+        "connect:DescribeInstance",
+        "connect:ListContactFlows",
+        "connect:DescribeContactFlow",
+        "connect:ListQueues",
+        "connect:DescribeQueue",
+        "connect:ListLexBots",
+        "connect:ListHoursOfOperations",
+        "connect:DescribeHoursOfOperation",
+        "connect:GetCurrentMetricData",
+        "connect:GetCurrentUserData"
+      ],
+      "Resource": "*"
+    },
+
+    {
+      "Sid": "STSCallerIdentity",
+      "_comment": "Allows the workflow to verify which role it has assumed (used in the 'Verify assumed AWS identity' step).",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+
+  ]
+}

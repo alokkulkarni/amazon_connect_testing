@@ -1,0 +1,14 @@
+# ============================================================
+# Amazon Connect Dashboard Test Runner – Python Dependencies
+# ============================================================
+# Install with:
+#   pip install -r requirements.txt
+#
+# boto3         – AWS SDK for Python (Connect, STS APIs)
+# botocore      – Low-level AWS client library (included with boto3)
+# python-dotenv – Load .env files for local development
+# ============================================================
+
+boto3>=1.42.34
+botocore>=1.42.34
+python-dotenv>=1.0.0

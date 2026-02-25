@@ -1,0 +1,59 @@
+{
+  "_comment": "Amazon Connect Dashboard Test Runner – all runtime parameters live here.",
+  "_description": "This file controls every tunable aspect of the test execution pipeline. Override any value via environment variable (see run_connect_tests.py for the mapping) or supply a different config path via --config CLI argument.",
+
+  "connect": {
+    "_comment": "Core Amazon Connect account identifiers.",
+    "instance_id": "${CONNECT_INSTANCE_ID}",
+    "instance_alias": "${CONNECT_INSTANCE_ALIAS}",
+    "region": "${AWS_REGION:-eu-west-2}"
+  },
+
+  "iam": {
+    "_comment": "IAM role that GitHub Actions OIDC provider assumes. Leave empty to use the environment's existing credentials (e.g. a local development session).",
+    "role_arn": "${AWS_ROLE_ARN}",
+    "session_name": "connect-voice-test-runner",
+    "session_duration_seconds": 3600
+  },
+
+  "execution": {
+    "_comment": "Concurrency and retry settings for test execution.",
+    "max_concurrent_tests": 5,
+    "poll_interval_seconds": 5,
+    "max_poll_attempts": 60,
+    "test_timeout_seconds": 300,
+    "retry_on_failure": true,
+    "retry_attempts": 2,
+    "retry_delay_seconds": 10
+  },
+
+  "test_selection": {
+    "_comment": "Which tests to run. 'all' runs every test in test_cases.json. Provide an array of test_case_ids to run a subset.",
+    "run_mode": "all",
+    "test_case_ids": []
+  },
+
+  "reporting": {
+    "_comment": "Output directories and file names.",
+    "output_dir": "test-results",
+    "json_report_name": "connect_test_results.json",
+    "html_report_name": "connect_test_results.html",
+    "xml_report_name":  "connect_test_results.xml",
+    "include_transcripts": true,
+    "include_step_details": true,
+    "html_theme": {
+      "primary_color": "#232F3E",
+      "accent_color":  "#FF9900",
+      "pass_color":    "#1E8449",
+      "fail_color":    "#C0392B",
+      "warn_color":    "#E67E22"
+    }
+  },
+
+  "logging": {
+    "_comment": "Python logging level for the test runner. Choices: DEBUG | INFO | WARNING | ERROR",
+    "level": "INFO",
+    "log_to_file": true,
+    "log_file_name": "test_runner.log"
+  }
+}

@@ -1,0 +1,42 @@
+# ── Environment / secrets ─────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Test output & reports ─────────────────────────────────────────────────
+# All timestamped run folders and top-level results are excluded.
+# Commit nothing under test-results/ (use CI artefact storage instead).
+test-results/
+
+# Log files
+*.log
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environment ────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.python-version
+
+# ── IDE / editor ──────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble

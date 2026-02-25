@@ -1,0 +1,31 @@
+{
+  "_comment": "IAM Trust Policy for the GitHub Actions OIDC role.",
+  "_description": "Attach this as the Trust Relationship on the IAM role identified by AWS_ROLE_ARN. It allows GitHub Actions to assume the role via OIDC – no long-lived AWS access keys are required. Replace GITHUB_ORG, GITHUB_REPO and optionally restrict to a branch.",
+  "_howto": [
+    "1. Open the AWS IAM Console → Roles → Create role",
+    "2. Select 'Web identity' as the trusted entity",
+    "3. Identity provider: token.actions.githubusercontent.com",
+    "4. Audience: sts.amazonaws.com",
+    "5. Paste the trust policy below as the role's Trust Relationship",
+    "6. Attach the permission policy from iam_permission_policy.json",
+    "7. Note the role ARN and store it as a GitHub Actions secret: AWS_ROLE_ARN"
+  ],
+
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowGitHubActionsOIDC",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:GITHUB_ORG/GITHUB_REPO:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
