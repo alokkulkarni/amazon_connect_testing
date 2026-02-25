@@ -29,19 +29,44 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r amazon_connect_testing/requirements.txt
         
-    - name: Configure AWS Credentials
-      if: env.MOCK_AWS == 'false'
-      uses: aws-actions/configure-aws-credentials@v2
+    # ── Pre-flight: reject static AWS credentials ─────────────────────────
+    # Static long-lived key pairs must never be used. OIDC is the only
+    # approved CI mechanism. Delete AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    # from repository secrets if present and replace with AWS_ROLE_ARN.
+    - name: Pre-flight – reject static AWS credentials
+      shell: bash
+      run: |
+        VIOLATION=false
+        if [[ -n "${AWS_ACCESS_KEY_ID:-}" && -z "${AWS_SESSION_TOKEN:-}" ]]; then
+          echo "::error title=Static credentials::AWS_ACCESS_KEY_ID set without AWS_SESSION_TOKEN. Use OIDC instead."
+          VIOLATION=true
+        fi
+        if [[ -n "${AWS_SECRET_ACCESS_KEY:-}" && -z "${AWS_SESSION_TOKEN:-}" ]]; then
+          echo "::error title=Static credentials::AWS_SECRET_ACCESS_KEY set without AWS_SESSION_TOKEN. Use OIDC instead."
+          VIOLATION=true
+        fi
+        if [[ "${VIOLATION}" == "true" ]]; then
+          echo "Approved mechanism: aws-actions/configure-aws-credentials@v4 with role-to-assume."
+          echo "Store only the IAM role ARN as secret AWS_ROLE_ARN. Never store key pairs."
+          exit 1
+        fi
+        echo "Credential pre-flight passed."
+
+    # ── Configure AWS credentials via OIDC (always required) ─────────────
+    # No conditional – OIDC authentication is mandatory for all runs.
+    # The role trust policy (iam_trust_policy.json) must allow
+    # token.actions.githubusercontent.com as the federated principal.
+    - name: Configure AWS Credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: connect-voice-test-runner
         aws-region: ${{ secrets.AWS_REGION }}
-        
+
     - name: Run Voice Flow Tests
       env:
         CONNECT_INSTANCE_ID: ${{ secrets.CONNECT_INSTANCE_ID }}
         AWS_REGION: ${{ secrets.AWS_REGION }}
-        # Set to 'false' for real testing (requires valid creds and charges apply)
-        MOCK_AWS: 'true' 
       run: |
         cd amazon_connect_testing
         # Run tests and generate JUnit XML report for GitHub

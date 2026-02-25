@@ -172,6 +172,44 @@ jobs:
           # Print the file but mask any non-empty values that look like IDs
           sed 's/=.\+/=***/' connect_voice_simulated/.env
 
+      # ── 3c. Pre-flight: enforce no static AWS credentials ──────────────────
+      # Static long-lived key pairs (key+secret without a session token) are
+      # never permitted. This job must obtain credentials exclusively via the
+      # OIDC role-assumption step below.
+      #
+      # If this step fails, check that:
+      #   • No repository secret is named AWS_ACCESS_KEY_ID or
+      #     AWS_SECRET_ACCESS_KEY. Delete them from Settings → Secrets.
+      #   • The env: block at the job or workflow level does not inject these
+      #     vars from any other source.
+      #   • Use ONLY: secrets.AWS_ROLE_ARN → aws-actions/configure-aws-credentials
+      - name: "Pre-flight: reject any static AWS credentials"
+        shell: bash
+        run: |
+          VIOLATION=false
+
+          if [[ -n "${AWS_ACCESS_KEY_ID:-}" && -z "${AWS_SESSION_TOKEN:-}" ]]; then
+            echo "::error title=Static credentials detected::AWS_ACCESS_KEY_ID is set without AWS_SESSION_TOKEN (long-lived static key). Remove it from repository secrets and use OIDC instead."
+            VIOLATION=true
+          fi
+
+          if [[ -n "${AWS_SECRET_ACCESS_KEY:-}" && -z "${AWS_SESSION_TOKEN:-}" ]]; then
+            echo "::error title=Static credentials detected::AWS_SECRET_ACCESS_KEY is set without AWS_SESSION_TOKEN (long-lived static key). Remove it from repository secrets and use OIDC instead."
+            VIOLATION=true
+          fi
+
+          if [[ "${VIOLATION}" == "true" ]]; then
+            echo ""
+            echo "Approved CI credential mechanism:"
+            echo "  aws-actions/configure-aws-credentials@v4"
+            echo "    role-to-assume: \${{ secrets.AWS_ROLE_ARN }}"
+            echo "Store ONLY the role ARN as a secret. Never store key pairs."
+            exit 1
+          fi
+
+          echo "Credential pre-flight passed – no static key pairs detected."
+          echo "OIDC role assumption will proceed in the next step."
+
       # ── 4. Assume IAM role via GitHub OIDC ────────────────────────────────
       #
       # This step exchanges the GitHub OIDC JWT for short-lived AWS credentials.
